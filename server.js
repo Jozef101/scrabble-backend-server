@@ -1,5 +1,5 @@
 // server/server.js
-import { BOARD_SIZE, RACK_SIZE } from '../src/utils/constants.js'; // Importujeme BOARD_SIZE a RACK_SIZE z constants.js
+// import { BOARD_SIZE, RACK_SIZE } from '../src/utils/constants.js'; // Importujeme BOARD_SIZE a RACK_SIZE z constants.js
 
 // const express = require('express');
 import express from 'express';
@@ -12,6 +12,9 @@ import cors from 'cors';
 
 const app = express();
 const server = http.createServer(app);
+
+const BOARD_SIZE = 15;
+const RACK_SIZE = 7;
 
 // Používame CORS, aby frontend (bežiaci na inom porte/doméne) mohol komunikovať so serverom
 app.use(cors({
