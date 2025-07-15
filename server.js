@@ -272,7 +272,11 @@ io.on('connection', (socket) => {
         // Overenie, či je na ťahu správny hráč
         // Akcia updateGameState a assignJoker môže prísť aj mimo ťahu pre UI synchronizáciu,
         // preto ich vynecháme z kontroly ťahu.
-        if (gameInstance.gameState && action.type !== 'updateGameState' && action.type !== 'assignJoker' && (gameInstance.gameState.currentPlayerIndex !== socket.playerIndex)) {
+        if (gameInstance.gameState &&
+            action.type !== 'updateGameState' &&
+            action.type !== 'assignJoker' &&
+            action.type !== 'chatMessage' &&
+            (gameInstance.gameState.currentPlayerIndex !== socket.playerIndex)) {
             socket.emit('gameError', 'Nie je váš ťah!');
             console.warn(`Hráč ${socket.playerIndex + 1} sa pokúsil o akciu ${action.type}, ale nie je na ťahu v hre ${gameInstance.gameId}.`);
             return;
