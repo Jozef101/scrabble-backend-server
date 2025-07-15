@@ -12,13 +12,14 @@ import cors from 'cors';
 
 const app = express();
 const server = http.createServer(app);
+const allowedOrigins = ['http://localhost:3000', 'https://skrebl.vercel.app/']; // Frontend URL, ktorý bude komunikovať so serverom
 
 const BOARD_SIZE = 15;
 const RACK_SIZE = 7;
 
 // Používame CORS, aby frontend (bežiaci na inom porte/doméne) mohol komunikovať so serverom
 app.use(cors({
-    origin: '*', // Povoliť všetky domény pre jednoduchosť testovania. V produkcii by ste chceli obmedziť na doménu vášho frontendu.
+    origin: allowedOrigins, // Povoliť všetky domény pre jednoduchosť testovania. V produkcii by ste chceli obmedziť na doménu vášho frontendu.
     methods: ['GET', 'POST']
 }));
 
@@ -32,7 +33,7 @@ app.use(cors({
 
 const io = new Server(server, {
     cors: { 
-        origin: '*', // Povoliť všetky domény pre testovanie
+        origin: allowedOrigins,
         methods: ['GET', 'POST']
     }
 });
