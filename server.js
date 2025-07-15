@@ -12,7 +12,7 @@ import cors from 'cors';
 
 const app = express();
 const server = http.createServer(app);
-const allowedOrigins = ['http://localhost:3000', 'https://skrebl.vercel.app/']; // Frontend URL, ktorý bude komunikovať so serverom
+const allowedOrigins = ['http://localhost:3000', 'https://skrebl.vercel.app']; // Frontend URL, ktorý bude komunikovať so serverom
 
 const BOARD_SIZE = 15;
 const RACK_SIZE = 7;
@@ -39,6 +39,10 @@ const io = new Server(server, {
 });
 
 const PORT = process.env.PORT || 4000;
+
+server.listen(PORT, () => {
+    console.log(`Server beží na porte ${PORT}`);
+});
 
 // ====================================================================
 // Globálny manažér hier (uchováva viacero herných inštancií)
