@@ -40,10 +40,6 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 4000;
 
-server.listen(PORT, () => {
-    console.log(`Server beží na porte ${PORT}`);
-});
-
 // ====================================================================
 // Globálny manažér hier (uchováva viacero herných inštancií)
 // ====================================================================
