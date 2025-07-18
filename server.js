@@ -355,3 +355,7 @@ io.on('connection', (socket) => {
 server.listen(PORT, () => {
     console.log(`Server beží na porte ${PORT}`);
 });
+
+app.get('/ping', (req, res) => {
+  res.send('pong');
+});
