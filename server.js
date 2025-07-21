@@ -1,38 +1,62 @@
 // server/server.js
-// import { BOARD_SIZE, RACK_SIZE } from '../src/utils/constants.js'; // Importujeme BOARD_SIZE a RACK_SIZE z constants.js
-
-// const express = require('express');
 import express from 'express';
-// const http = require('http');
 import http from 'http';
-// const socketIo = require('socket.io');
 import { Server } from 'socket.io';
-// const cors = require('cors');
 import cors from 'cors';
+// Firebase Admin SDK Imports
+import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
+
+// ====================================================================
+// Firebase Admin SDK Initialization
+// Potrebujete nastaviť váš Firebase Service Account Key ako premennú prostredia
+// na Render.com (napr., FIREBASE_SERVICE_ACCOUNT_KEY).
+// Tento kľúč by mal byť JSON reťazec.
+// ====================================================================
+let serviceAccount;
+try {
+    // Pokus o parsovanie z premennej prostredia
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+    } else {
+        console.warn("Premenná prostredia FIREBASE_SERVICE_ACCOUNT_KEY nebola nájdená. Firebase Admin SDK nebude inicializované.");
+        // Fallback pre lokálny vývoj, ak nechcete okamžite nastavovať premenné prostredia
+        // Pre lokálne testovanie môžete umiestniť svoj JSON súbor servisného účtu a importovať ho:
+        // serviceAccount = require('./path/to/your/serviceAccountKey.json');
+        // ALEBO, ak chcete spustiť lokálne bez perzistencie Firestore, môžete to preskočiť.
+    }
+} catch (e) {
+    console.error("Chyba pri parsovaní FIREBASE_SERVICE_ACCOUNT_KEY:", e);
+    serviceAccount = null;
+}
+
+let dbAdmin;
+// Inicializácia Firebase Admin SDK, ak je kľúč servisného účtu dostupný
+if (serviceAccount) {
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+    });
+    dbAdmin = getFirestore();
+    console.log("Firebase Admin SDK inicializované.");
+} else {
+    console.error("Firebase Admin SDK nebolo inicializované z dôvodu chýbajúceho alebo neplatného kľúča servisného účtu.");
+}
+
 
 const app = express();
 const server = http.createServer(app);
-const allowedOrigins = ['http://localhost:3000', 'https://skrebl.vercel.app']; // Frontend URL, ktorý bude komunikovať so serverom
+const allowedOrigins = ['http://localhost:3000', 'https://skrebl.vercel.app'];
 
 const BOARD_SIZE = 15;
 const RACK_SIZE = 7;
 
-// Používame CORS, aby frontend (bežiaci na inom porte/doméne) mohol komunikovať so serverom
 app.use(cors({
-    origin: allowedOrigins, // Povoliť všetky domény pre jednoduchosť testovania. V produkcii by ste chceli obmedziť na doménu vášho frontendu.
+    origin: allowedOrigins,
     methods: ['GET', 'POST']
 }));
 
-// Inicializácia Socket.IO servera
-// const io = socketIo(server, {
-//     cors: {
-//         origin: '*', // Rovnako ako pre Express, povoliť všetky domény
-//         methods: ['GET', 'POST']
-//     }
-// });
-
 const io = new Server(server, {
-    cors: { 
+    cors: {
         origin: allowedOrigins,
         methods: ['GET', 'POST']
     }
@@ -89,14 +113,14 @@ function createNewGameInstance(gameId) {
 
 /**
  * Inicializuje počiatočný stav Scrabble hry pre danú inštanciu.
- * @param {object} gameInstance Objekt hernej inštancie, ktorú chceme inicializovať.
+ * @returns {object} Inicializovaný stav hry.
  */
-function initializeGameInstance(gameInstance) {
+function generateInitialGameState() {
     const initialBag = createLetterBag();
     const { drawnLetters: player0Rack, remainingBag: bagAfterP0 } = drawLetters(initialBag, RACK_SIZE);
     const { drawnLetters: player1Rack, remainingBag: finalBag } = drawLetters(bagAfterP0, RACK_SIZE);
 
-    gameInstance.gameState = {
+    return {
         playerRacks: [player0Rack, player1Rack],
         board: Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(null)),
         letterBag: finalBag,
@@ -112,21 +136,31 @@ function initializeGameInstance(gameInstance) {
         isGameOver: false,
         hasInitialGameStateReceived: true, // Klient teraz vie, že dostal počiatočný stav
     };
-    console.log(`Počiatočný herný stav pre hru ${gameInstance.gameId} inicializovaný na serveri.`);
-    console.log("Rack Hráča 1:", gameInstance.gameState.playerRacks[0].map(l => l.letter));
-    console.log("Rack Hráča 2:", gameInstance.gameState.playerRacks[1].map(l => l.letter));
 }
+
 
 /**
  * Resetuje stav danej hernej inštancie na počiatočné hodnoty.
  * @param {object} gameInstance Objekt hernej inštancie, ktorú chceme resetovať.
  */
-function resetGameInstance(gameInstance) {
+async function resetGameInstance(gameInstance) {
     gameInstance.players = [null, null]; // Reset na prázdne sloty
     gameInstance.playerSockets = {}; // Vyčistíme referencie na sockety
     gameInstance.gameState = null;
     gameInstance.isGameStarted = false;
     console.log(`Herný stav pre hru ${gameInstance.gameId} bol resetovaný.`);
+
+    // KLÚČOVÁ ZMENA: Odstránime stav hry z Firestore pri resete
+    if (dbAdmin) {
+        try {
+            // Používame pevne dané appId 'default-app-id' pre cestu v Firestore
+            const gameDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gameStates').doc(gameInstance.gameId);
+            await gameDocRef.delete();
+            console.log(`Stav hry ${gameInstance.gameId} odstránený z Firestore.`);
+        } catch (e) {
+            console.error(`Chyba pri odstraňovaní stavu hry ${gameInstance.gameId} z Firestore:`, e);
+        }
+    }
 }
 
 /**
@@ -180,34 +214,27 @@ io.on('connection', (socket) => {
     console.log(`Nový klient pripojený: ${socket.id}`);
 
     // Pripojenie hráča k hre
-    // Teraz 'joinGame' očakáva gameIdFromClient
-    socket.on('joinGame', (gameIdFromClient) => {
+    socket.on('joinGame', async (gameIdFromClient) => { // Zmenené na async
         if (!gameIdFromClient) {
-            // Použijeme generické ID, ak klient neposkytne žiadne.
-            // V reálnej aplikácii by ste chceli, aby si užívatelia vyberali/vytvárali ID.
             gameIdFromClient = 'default-scrabble-game';
             console.log(`Klient ${socket.id} sa pokúsil pripojiť bez ID hry. Priradené defaultné ID: ${gameIdFromClient}`);
         }
 
         let gameInstance = games.get(gameIdFromClient);
         if (!gameInstance) {
-            // Ak hra s daným ID neexistuje, vytvoríme novú
             gameInstance = createNewGameInstance(gameIdFromClient);
             games.set(gameIdFromClient, gameInstance);
             console.log(`Vytvorená nová hra s ID: ${gameIdFromClient}`);
-            // Klient, ktorý vytvoril hru, sa k nej aj pripojí do "miestnosti"
             socket.join(gameIdFromClient);
         } else {
-            // Ak hra existuje, skúsime sa pripojiť k jej miestnosti
             socket.join(gameIdFromClient);
         }
 
-        // Priradíme gameInstance k objektu socketu pre jednoduchší prístup v budúcich eventoch
         socket.gameInstance = gameInstance;
 
         let playerIndex = -1;
 
-        // 1. Skontrolujeme, či sa klient už pripojil (rekonexia) k TEJTO HRE
+        // Skontrolujeme, či sa klient už pripojil (rekonexia)
         if (gameInstance.players[0] && gameInstance.players[0].id === socket.id) {
             playerIndex = 0;
             console.log(`Klient ${socket.id} sa znovu pripojil k hre ${gameIdFromClient} ako Hráč 1.`);
@@ -215,7 +242,7 @@ io.on('connection', (socket) => {
             playerIndex = 1;
             console.log(`Klient ${socket.id} sa znovu pripojil k hre ${gameIdFromClient} ako Hráč 2.`);
         } else {
-            // 2. Ak nie je rekonexia, priradíme nový slot, ak je k dispozícii v TEJTO HRE
+            // Ak nie je rekonexia, priradíme nový slot
             if (gameInstance.players[0] === null) {
                 playerIndex = 0;
                 console.log(`Klient ${socket.id} sa pripojil k hre ${gameIdFromClient} ako Hráč 1.`);
@@ -223,55 +250,78 @@ io.on('connection', (socket) => {
                 playerIndex = 1;
                 console.log(`Klient ${socket.id} sa pripojil k hre ${gameIdFromClient} ako Hráč 2.`);
             } else {
-                // 3. Ak sú oba sloty obsadené v TEJTO HRE a nie je to rekonexia, hra je plná
-                socket.emit('gameError', 'Hra je už plná.'); // Táto chyba je teraz špecifická pre dané ID hry
+                socket.emit('gameError', 'Hra je už plná.');
                 console.log(`Klient ${socket.id} sa nemohol pripojiť k hre ${gameIdFromClient}, hra je plná.`);
                 return;
             }
         }
 
-        // Uložíme informácie o hráčovi do príslušného slotu TEJTO HRY
         gameInstance.players[playerIndex] = { id: socket.id, playerIndex: playerIndex };
-        gameInstance.playerSockets[socket.id] = socket; // Uložíme referenciu na socket
-        socket.playerIndex = playerIndex; // Priradíme playerIndex priamo k objektu socketu pre jednoduchší prístup
-        socket.gameId = gameIdFromClient; // Uložíme ID hry na socket pre jednoduchší prístup pri odpojení
+        gameInstance.playerSockets[socket.id] = socket;
+        socket.playerIndex = playerIndex;
+        socket.gameId = gameIdFromClient;
 
-        // Oznámime klientovi jeho priradený playerIndex
         socket.emit('playerAssigned', playerIndex);
 
         console.log(`Aktuálny stav players pre hru ${gameIdFromClient}:`, gameInstance.players.map(p => p ? `Hráč ${p.playerIndex + 1} (${p.id})` : 'Voľný'));
 
-        // Logika pre spustenie/pokračovanie hry
         const activePlayersCount = gameInstance.players.filter(p => p !== null).length;
-        if (activePlayersCount === 2 && !gameInstance.isGameStarted) {
-            // Dvaja hráči pripojení a hra ešte nezačala, inicializujeme ju
-            console.log(`Hra ${gameIdFromClient}: Dvaja hráči pripojení, inicializujem hru!`);
-            gameInstance.isGameStarted = true;
-            initializeGameInstance(gameInstance); // Používame novú funkciu s gameInstance
-            io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState); // Emitujeme len hráčom TEJTO hry
-        } else if (gameInstance.isGameStarted && gameInstance.gameState) {
-            // Hra už beží, pošleme aktuálny stav pripájajúcemu sa (alebo znovu pripájajúcemu sa) hráčovi
-            socket.emit('gameStateUpdate', gameInstance.gameState);
+
+        // KLÚČOVÁ ZMENA: Načítanie stavu hry z Firestore pri pripojení
+        if (dbAdmin) {
+            try {
+                // Používame pevne dané appId 'default-app-id' pre cestu v Firestore
+                const gameDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gameStates').doc(gameIdFromClient);
+                const docSnap = await gameDocRef.get();
+                if (docSnap.exists() && docSnap.data() && docSnap.data().gameState) {
+                    const loadedState = JSON.parse(docSnap.data().gameState);
+                    gameInstance.gameState = loadedState;
+                    gameInstance.isGameStarted = true; // Ak sa stav načíta, hra už beží
+                    console.log(`Stav hry ${gameIdFromClient} načítaný z Firestore.`);
+                } else {
+                    console.log(`Žiadny uložený stav hry pre ${gameIdFromClient} vo Firestore. Inicializujem nový.`);
+                    // Ak neexistuje, inicializujeme nový stav
+                    gameInstance.gameState = generateInitialGameState();
+                    gameInstance.isGameStarted = true; // Nová hra začína
+                    // Uložíme nový stav do Firestore
+                    await gameDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                    console.log(`Nový stav hry ${gameIdFromClient} inicializovaný a uložený do Firestore.`);
+                }
+            } catch (e) {
+                console.error(`Chyba pri načítaní/inicializácii stavu hry ${gameIdFromClient} z Firestore:`, e);
+                // V prípade chyby môžeme fallbackovať na generovanie nového stavu,
+                // ale už ho nebudeme ukladať, aby sme predišli nekonečným chybám.
+                if (!gameInstance.gameState) {
+                     gameInstance.gameState = generateInitialGameState();
+                     console.log("Fallback: Inicializovaný nový stav hry kvôli chybe Firestore.");
+                }
+            }
         } else {
-            // Pripojený len jeden hráč, alebo hra ešte nezačala a čaká sa na druhého
+            // Ak dbAdmin nie je k dispozícii, fallback na in-memory inicializáciu
+            if (!gameInstance.gameState) {
+                gameInstance.gameState = generateInitialGameState();
+                console.log("Fallback: Inicializovaný nový stav hry (bez Firestore) pre hru:", gameIdFromClient);
+            }
+        }
+
+
+        if (gameInstance.isGameStarted && gameInstance.gameState) {
+            io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState); // Emitujeme aktualizovaný stav všetkým v miestnosti
+        } else {
             console.log(`Hra ${gameIdFromClient}: Čaká sa na druhého hráča. Aktuálni hráči: ${activePlayersCount}`);
-            // Emitujeme iba do miestnosti danej hry
-            io.to(gameInstance.gameId).emit('waitingForPlayers', 'Čaká sa na druhého hráča...'); 
+            io.to(gameInstance.gameId).emit('waitingForPlayers', 'Čaká sa na druhého hráča...');
         }
     });
 
     // Klient posiela akciu (ťah, výmena, pass)
-    socket.on('playerAction', (action) => {
-        const gameInstance = socket.gameInstance; // Získame inštanciu hry z objektu socketu
+    socket.on('playerAction', async (action) => { // Zmenené na async
+        const gameInstance = socket.gameInstance;
         if (!gameInstance) {
             socket.emit('gameError', 'Nie ste pripojený k žiadnej hre.');
             console.warn(`Hráč ${socket.id} sa pokúsil o akciu ${action.type}, ale nie je pripojený k žiadnej hre.`);
             return;
         }
 
-        // Overenie, či je na ťahu správny hráč
-        // Akcia updateGameState a assignJoker môže prísť aj mimo ťahu pre UI synchronizáciu,
-        // preto ich vynecháme z kontroly ťahu.
         if (gameInstance.gameState &&
             action.type !== 'updateGameState' &&
             action.type !== 'assignJoker' &&
@@ -287,17 +337,41 @@ io.on('connection', (socket) => {
         switch (action.type) {
             case 'updateGameState':
                 if (gameInstance.gameState) {
-                    // Aktualizujeme celý stav hry. Pre komplexnejšie hry by sa tu vykonávala validácia.
                     gameInstance.gameState = { ...gameInstance.gameState, ...action.payload };
-                    // Emitujeme aktualizovaný stav len hráčom v danej miestnosti hry
-                    io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState); 
+                    // KLÚČOVÁ ZMENA: Uložíme stav do Firestore po každej aktualizácii
+                    if (dbAdmin) {
+                        try {
+                            // Používame pevne dané appId 'default-app-id' pre cestu v Firestore
+                            const gameDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gameStates').doc(gameInstance.gameId);
+                            await gameDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                            console.log(`Stav hry ${gameInstance.gameId} uložený do Firestore z playerAction.`);
+                        } catch (e) {
+                            console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z playerAction:`, e);
+                        }
+                    }
+                    io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
                 }
                 break;
-            case 'chatMessage': // Ak sa rozhodnete spracovať chat na serveri
+            case 'initializeGame': // KLÚČOVÁ ZMENA: Spracovanie 'initializeGame'
+                if (!gameInstance.gameState) {
+                    gameInstance.gameState = generateInitialGameState();
+                    gameInstance.isGameStarted = true;
+                    console.log(`Herný stav pre hru ${gameInstance.gameId} inicializovaný serverom na žiadosť klienta.`);
+                    if (dbAdmin) {
+                        try {
+                            // Používame pevne dané appId 'default-app-id' pre cestu v Firestore
+                            const gameDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gameStates').doc(gameInstance.gameId);
+                            await gameDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                            console.log(`Inicializovaný stav hry ${gameInstance.gameId} uložený do Firestore.`);
+                        } catch (e) {
+                            console.error(`Chyba pri ukladaní inicializovaného stavu hry ${gameInstance.gameId} do Firestore:`, e);
+                        }
+                    }
+                    io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                }
+                break;
+            case 'chatMessage':
                 const fullMessage = { senderId: socket.id, senderIndex: socket.playerIndex, text: action.payload, timestamp: Date.now() };
-                // História chatu by mala byť uložená v gameInstance, ak chceme, aby bola špecifická pre hru
-                // if (!gameInstance.chatMessages) gameInstance.chatMessages = [];
-                // gameInstance.chatMessages.push(fullMessage);
                 io.to(gameInstance.gameId).emit('receiveChatMessage', fullMessage);
                 console.log(`Chat správa v hre ${gameInstance.gameId} od Hráča ${socket.playerIndex + 1}: ${action.payload}`);
                 break;
@@ -308,21 +382,19 @@ io.on('connection', (socket) => {
     });
 
     // Odpojenie klienta
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => { // Zmenené na async
         console.log(`Klient odpojený: ${socket.id}`);
-        const gameInstance = socket.gameInstance; // Získame inštanciu hry z objektu socketu
+        const gameInstance = socket.gameInstance;
         const disconnectedPlayerIndex = socket.playerIndex;
-        const gameId = socket.gameId; // Získame ID hry z objektu socketu
+        const gameId = socket.gameId;
 
         if (!gameInstance || !gameId) {
             console.log(`Odpojený klient ${socket.id} nebol pripojený k žiadnej hre.`);
             return;
         }
 
-        // Opustíme miestnosť
         socket.leave(gameId);
 
-        // Vyčistíme slot odpojeného hráča v TEJTO HRE
         if (disconnectedPlayerIndex !== undefined && gameInstance.players[disconnectedPlayerIndex]?.id === socket.id) {
             gameInstance.players[disconnectedPlayerIndex] = null;
             delete gameInstance.playerSockets[socket.id];
@@ -331,21 +403,14 @@ io.on('connection', (socket) => {
 
         const activePlayersCount = gameInstance.players.filter(p => p !== null).length;
 
-        // Ak hra prebiehala a teraz je menej ako 2 aktívni hráči, resetujeme hru
-        if (gameInstance.isGameStarted && activePlayersCount < 2) {
-            console.log(`Hra ${gameId} bola prerušená, resetujem stav.`);
-            resetGameInstance(gameInstance); // Použijeme funkciu na reset pre konkrétnu hru
-            io.to(gameId).emit('gameReset', 'Jeden z hráčov sa odpojil. Hra bola resetovaná.');
-            // Ak už nikto nie je pripojený k tejto hre, môžeme ju odstrániť z mapy hier
-            if (activePlayersCount === 0) {
-                games.delete(gameId);
-                console.log(`Hra ${gameId} bola odstránená, pretože sú všetci odpojení.`);
-            }
-        } else if (activePlayersCount === 0) {
-            // Ak sa odpojí posledný hráč, vyčistíme úplne stav a odstránime hru
+        // Ak už nikto nie je pripojený k tejto hre, môžeme ju odstrániť z mapy hier a z Firestore
+        if (activePlayersCount === 0) {
             console.log(`Hra ${gameId}: Všetci hráči odpojení, herný stav vyčistený a hra odstránená.`);
-            resetGameInstance(gameInstance);
+            await resetGameInstance(gameInstance); // Resetujeme aj vo Firestore
             games.delete(gameId);
+        } else if (gameInstance.isGameStarted && activePlayersCount < 2) {
+            console.log(`Hra ${gameId} bola prerušená, ale zostáva v pamäti pre možnú rekonexiu.`);
+            // Tu by sme mohli zvážiť timeout na reset, ak sa nikto nepripojí po určitom čase
         }
         console.log(`Aktuálny stav players pre hru ${gameId} po odpojení:`, gameInstance.players.map(p => p ? `Hráč ${p.playerIndex + 1} (${p.id})` : 'Voľný'));
     });
@@ -357,5 +422,5 @@ server.listen(PORT, () => {
 });
 
 app.get('/ping', (req, res) => {
-  res.send('pong');
+    res.send('pong');
 });
