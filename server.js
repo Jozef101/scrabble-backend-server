@@ -6,6 +6,7 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 // Firebase Admin SDK Imports
 import admin from 'firebase-admin';
+// KLÚČOVÁ ZMENA: Odstránené nesprávne importy. getFirestore je jediný priamy import.
 import { getFirestore } from 'firebase-admin/firestore';
 
 // ====================================================================
@@ -162,8 +163,22 @@ async function resetGameInstance(gameInstance) {
             const gameDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gameStates').doc(gameInstance.gameId);
             await gameDocRef.delete();
             console.log(`Stav hry ${gameInstance.gameId} odstránený z Firestore.`);
+
+            // NOVÉ: Odstránime aj chatové správy pre túto hru
+            const chatMessagesCollectionRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('chatMessages');
+            // KLÚČOVÁ ZMENA: Používame metódy Admin SDK pre query a get
+            const q = chatMessagesCollectionRef.where('gameId', '==', gameInstance.gameId);
+            const querySnapshot = await q.get();
+            const deletePromises = [];
+            querySnapshot.forEach((doc) => {
+                // KLÚČOVÁ ZMENA: Používame metódu .delete() na DocumentReference
+                deletePromises.push(doc.ref.delete());
+            });
+            await Promise.all(deletePromises);
+            console.log(`Chatové správy pre hru ${gameInstance.gameId} odstránené z Firestore.`);
+
         } catch (e) {
-            console.error(`Chyba pri odstraňovaní stavu hry ${gameInstance.gameId} z Firestore:`, e);
+            console.error(`Chyba pri odstraňovaní stavu hry/chatu ${gameInstance.gameId} z Firestore:`, e);
         }
     }
 }
@@ -254,7 +269,7 @@ io.on('connection', (socket) => {
 
         let playerIndex = -1;
 
-        // KLÚČOVÁ ZMENA: Načítanie stavu hráčov z Firestore pri pripojení
+        // Načítanie stavu hráčov z Firestore pri pripojení
         if (dbAdmin) {
             try {
                 const gamePlayersDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gamePlayers').doc(gameIdFromClient);
@@ -348,8 +363,22 @@ io.on('connection', (socket) => {
                     await gameDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
                     console.log(`Nový stav hry ${gameIdFromClient} inicializovaný a uložený do Firestore.`);
                 }
+
+                // NOVÉ: Načítanie histórie chatu z Firestore
+                const chatMessagesCollectionRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('chatMessages');
+                // KLÚČOVÁ ZMENA: Používame metódy Admin SDK pre query a get
+                const q = chatMessagesCollectionRef.where('gameId', '==', gameIdFromClient).orderBy('timestamp');
+                const querySnapshot = await q.get();
+                const chatHistory = [];
+                querySnapshot.forEach((doc) => {
+                    chatHistory.push(doc.data());
+                });
+                socket.emit('chatHistory', chatHistory); // Odošleme históriu chatu len pripájajúcemu sa klientovi
+                // DEBUG LOG: Počet načítaných správ
+                console.log(`Server: História chatu pre hru ${gameIdFromClient} načítaná z Firestore (${chatHistory.length} správ) a odoslaná klientovi.`);
+
             } catch (e) {
-                console.error(`Chyba pri načítaní/inicializácii stavu hry ${gameIdFromClient} z Firestore:`, e);
+                console.error(`Chyba pri načítaní/inicializácii stavu hry alebo chatu ${gameIdFromClient} z Firestore:`, e);
                 if (!gameInstance.gameState) {
                     gameInstance.gameState = generateInitialGameState();
                     console.log("Fallback: Inicializovaný nový stav hry kvôli chybe Firestore.");
@@ -404,7 +433,7 @@ io.on('connection', (socket) => {
             case 'updateGameState':
                 if (gameInstance.gameState) {
                     gameInstance.gameState = { ...gameInstance.gameState, ...action.payload };
-                    // KLÚČOVÁ ZMENA: Uložíme stav do Firestore po každej aktualizácii
+                    // Uložíme stav do Firestore po každej aktualizácii
                     if (dbAdmin) {
                         try {
                             // Používame pevne dané appId 'default-app-id' pre cestu v Firestore
@@ -418,7 +447,7 @@ io.on('connection', (socket) => {
                     io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
                 }
                 break;
-            case 'initializeGame': // KLÚČOVÁ ZMENA: Spracovanie 'initializeGame'
+            case 'initializeGame': // Spracovanie 'initializeGame'
                 if (!gameInstance.gameState) {
                     gameInstance.gameState = generateInitialGameState();
                     gameInstance.isGameStarted = true;
@@ -427,13 +456,6 @@ io.on('connection', (socket) => {
                         try {
                             // Používame pevne dané appId 'default-app-id' pre cestu v Firestore
                             const gameDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gameStates').doc(gameInstance.gameId);
-                            // KLÚČOVÁ ZMENA: Zmenené docSnap.exists() na docSnap.exists (odstránené zátvorky)
-                            // Táto časť kódu bola skopírovaná z `joinGame` a mala by byť opravená rovnako.
-                            // Avšak, v pôvodnom kóde, ktorý ste mi dali, táto časť nebola.
-                            // Ak by sa tu v budúcnosti vyskytla podobná chyba, je potrebné ju opraviť.
-                            // Pre tento konkrétny prípad, kde ste mi dali len `server-js-update`,
-                            // táto časť kódu v `initializeGame` neobsahuje `docSnap.exists()`.
-                            // Preto ju tu nebudem meniť, aby som sa držal vášho pokynu "nemeň nič iné".
                             await gameDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
                             console.log(`Inicializovaný stav hry ${gameInstance.gameId} uložený do Firestore.`);
                         } catch (e) {
@@ -444,11 +466,30 @@ io.on('connection', (socket) => {
                 }
                 break;
             case 'chatMessage':
-                const fullMessage = { senderId: socket.id, senderIndex: socket.playerIndex, text: action.payload, timestamp: Date.now() };
+                const fullMessage = {
+                    gameId: gameInstance.gameId, // Pridáme gameId k správe pre filtrovanie vo Firestore
+                    senderId: socket.id,
+                    senderIndex: socket.playerIndex,
+                    text: action.payload,
+                    timestamp: Date.now()
+                };
                 io.to(gameInstance.gameId).emit('receiveChatMessage', fullMessage);
                 console.log(`Chat správa v hre ${gameInstance.gameId} od Hráča ${socket.playerIndex + 1}: ${action.payload}`);
+
+                // NOVÉ: Uložíme chatovú správu do Firestore
+                if (dbAdmin) {
+                    try {
+                        const chatMessagesCollectionRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('chatMessages');
+                        // KLÚČOVÁ ZMENA: Používame .add() metódu na CollectionReference
+                        await chatMessagesCollectionRef.add(fullMessage);
+                        // DEBUG LOG: Ukladanie správy
+                        console.log(`Server: Ukladám chat správu pre hru ${gameInstance.gameId} do Firestore.`);
+                    } catch (e) {
+                        console.error(`Chyba pri ukladaní chatovej správy pre hru ${gameInstance.gameId} do Firestore:`, e);
+                    }
+                }
                 break;
-            case 'assignJoker': // NOVÉ: Pridaná logika pre priradenie žolíka na serveri
+            case 'assignJoker': // Pridaná logika pre priradenie žolíka na serveri
                 if (gameInstance.gameState) {
                     const { x, y, assignedLetter } = action.payload;
                     const newBoard = gameInstance.gameState.board.map(row => [...row]);
@@ -489,14 +530,14 @@ io.on('connection', (socket) => {
 
         socket.leave(gameId);
 
-        // KLÚČOVÁ ZMENA: Nastavíme socketId hráča na null, ale ponecháme userId a playerIndex
+        // Nastavíme socketId hráča na null, ale ponecháme userId a playerIndex
         const playerSlot = gameInstance.players.find(p => p && p.userId === userId);
         if (playerSlot) {
             playerSlot.socketId = null; // Označíme, že tento userId už nemá aktívny socket
             delete gameInstance.playerSockets[socket.id]; // Odstránime referenciu na starý socket
             console.log(`Hráč (User: ${userId}) bol odpojený zo slotu hry ${gameId}.`);
 
-            // KLÚČOVÁ ZMENA: Uložíme aktualizovaný stav hráčov do Firestore po odpojení
+            // Uložíme aktualizovaný stav hráčov do Firestore po odpojení
             if (dbAdmin) {
                 try {
                     const gamePlayersDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gamePlayers').doc(gameId);
@@ -511,7 +552,7 @@ io.on('connection', (socket) => {
             console.warn(`Odpojený klient ${socket.id} (User: ${userId}) nebol nájdený v playerSlots pre hru ${gameId}.`);
         }
 
-        // KLÚČOVÁ ZMENA: Počet pripojených hráčov teraz kontroluje, či majú priradený socketId
+        // Počet pripojených hráčov teraz kontroluje, či majú priradený socketId
         const connectedPlayersCount = gameInstance.players.filter(p => p !== null && p.socketId !== null).length;
 
         if (connectedPlayersCount === 0) {
