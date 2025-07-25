@@ -141,6 +141,7 @@ function generateInitialGameState() {
         consecutivePasses: 0,
         isGameOver: false,
         hasInitialGameStateReceived: true, // Klient teraz vie, že dostal počiatočný stav
+        highlightedLetters: [], // NOVÉ: Inicializácia prázdneho poľa pre zvýraznené písmená
     };
 }
 
