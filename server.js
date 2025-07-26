@@ -401,6 +401,7 @@ io.on('connection', (socket) => {
                 io.to(gameInstance.gameId).emit('waitingForPlayers', 'Čaká sa na druhého hráča...');
                 console.log(`Server: Hra ${gameIdFromClient}: Čaká sa na druhého hráča. Aktuálni pripojení hráči: ${connectedPlayersCount}`);
             } else {
+                io.to(gameInstance.gameId).emit('gameStarted');
                 console.log(`Server: Hra ${gameIdFromClient}: Všetci hráči pripojení. Hra môže začať.`);
             }
         } else {
