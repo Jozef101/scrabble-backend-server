@@ -2,11 +2,10 @@
 import 'dotenv/config'; // Dôležité pre načítanie premenných prostredia z .env súboru
 import express from 'express';
 import http from 'http';
-import { Server } from 'socket.io';
+import { Server as SocketIOServer } from 'socket.io'; // Zmenené na SocketIOServer pre jasnosť
 import cors from 'cors';
 // Firebase Admin SDK Imports
 import admin from 'firebase-admin';
-// KLÚČOVÁ ZMENA: Odstránené nesprávne importy. getFirestore je jediný priamy import.
 import { getFirestore } from 'firebase-admin/firestore';
 
 // ====================================================================
@@ -57,7 +56,7 @@ app.use(cors({
     methods: ['GET', 'POST']
 }));
 
-const io = new Server(server, {
+const io = new SocketIOServer(server, { // Zmenené na SocketIOServer
     cors: {
         origin: allowedOrigins,
         methods: ['GET', 'POST']
@@ -140,8 +139,9 @@ function generateInitialGameState() {
         hasMovedToExchangeZoneThisTurn: false,
         consecutivePasses: 0,
         isGameOver: false,
+        highlightedLetters: [],
         hasInitialGameStateReceived: true, // Klient teraz vie, že dostal počiatočný stav
-        highlightedLetters: [], // NOVÉ: Inicializácia prázdneho poľa pre zvýraznené písmená
+        playerNicknames: {}, // Dôležité: Inicializujeme playerNicknames v stave hry
     };
 }
 
@@ -168,7 +168,7 @@ async function resetGameInstance(gameInstance) {
             // NOVÉ: Odstránime aj chatové správy pre túto hru
             const chatMessagesCollectionRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('chatMessages');
             // KLÚČOVÁ ZMENA: Používame metódy Admin SDK pre query a get
-            const q = chatMessagesCollectionRef.where('gameId', '==', gameInstance.gameId);
+            const q = chatMessagesCollectionRef.where('gameId', '==', gameInstance.gameId).orderBy('timestamp'); // Pridané orderBy pre konzistentnosť pri odstraňovaní
             const querySnapshot = await q.get();
             const deletePromises = [];
             querySnapshot.forEach((doc) => {
@@ -178,8 +178,13 @@ async function resetGameInstance(gameInstance) {
             await Promise.all(deletePromises);
             console.log(`Chatové správy pre hru ${gameInstance.gameId} odstránené z Firestore.`);
 
+            // KLÚČOVÁ ZMENA: Odstránime aj stav hráčov pre túto hru
+            const gamePlayersDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gamePlayers').doc(gameInstance.gameId);
+            await gamePlayersDocRef.delete();
+            console.log(`Stav hráčov pre hru ${gameInstance.gameId} odstránený z Firestore.`);
+
         } catch (e) {
-            console.error(`Chyba pri odstraňovaní stavu hry/chatu ${gameInstance.gameId} z Firestore:`, e);
+            console.error(`Chyba pri odstraňovaní stavu hry/chatu/hráčov ${gameInstance.gameId} z Firestore:`, e);
         }
     }
 }
@@ -269,6 +274,23 @@ io.on('connection', (socket) => {
         socket.userId = userId; // Uložíme userId na socket pre ľahší prístup
 
         let playerIndex = -1;
+        let playerNickname = userId; // Predvolená prezývka je userId
+
+        // KLÚČOVÁ ZMENA: Načítanie prezývky používateľa z Firestore
+        if (dbAdmin) {
+            try {
+                const userDocRef = dbAdmin.collection('users').doc(userId); // Predpokladáme kolekciu 'users'
+                const userDocSnap = await userDocRef.get();
+                if (userDocSnap.exists && userDocSnap.data() && userDocSnap.data().nickname) {
+                    playerNickname = userDocSnap.data().nickname;
+                    console.log(`Načítaná prezývka pre užívateľa ${userId}: ${playerNickname}`);
+                } else {
+                    console.log(`Prezývka pre užívateľa ${userId} nebola nájdená vo Firestore. Používam userId ako prezývku.`);
+                }
+            } catch (e) {
+                console.error(`Chyba pri načítaní prezývky pre užívateľa ${userId} z Firestore:`, e);
+            }
+        }
 
         // Načítanie stavu hráčov z Firestore pri pripojení
         if (dbAdmin) {
@@ -296,12 +318,13 @@ io.on('connection', (socket) => {
             }
         }
 
-        // 1. Skontrolujeme, či sa klient s daným userId už pripojil (rekonexia) k TEJTO HRE
+        // 1. Skontrolujeme, či sa klient s daným userId už pripojil (rekonexia) k TEJTO HRY
         for (let i = 0; i < gameInstance.players.length; i++) {
             if (gameInstance.players[i] && gameInstance.players[i].userId === userId) { // Check by userId
                 playerIndex = i;
-                // Aktualizujeme socketId pre rekonexiu
+                // Aktualizujeme socketId a nickname pre rekonexiu
                 gameInstance.players[i].socketId = socket.id;
+                gameInstance.players[i].nickname = playerNickname; // KLÚČOVÁ ZMENA: Aktualizujeme aj prezývku
                 console.log(`Klient ${socket.id} (User: ${userId}) sa znovu pripojil k hre ${gameIdFromClient} ako Hráč ${playerIndex + 1}.`);
                 break;
             }
@@ -312,11 +335,11 @@ io.on('connection', (socket) => {
             // Hľadáme prázdny slot alebo slot s odpojeným hráčom (socketId: null)
             if (gameInstance.players[0] === null || (gameInstance.players[0] && gameInstance.players[0].socketId === null)) {
                 playerIndex = 0;
-                gameInstance.players[0] = { userId: userId, playerIndex: 0, socketId: socket.id };
+                gameInstance.players[0] = { userId: userId, playerIndex: 0, socketId: socket.id, nickname: playerNickname }; // KLÚČOVÁ ZMENA: Ukladáme prezývku
                 console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} ako Hráč 1.`);
             } else if (gameInstance.players[1] === null || (gameInstance.players[1] && gameInstance.players[1].socketId === null)) {
                 playerIndex = 1;
-                gameInstance.players[1] = { userId: userId, playerIndex: 1, socketId: socket.id };
+                gameInstance.players[1] = { userId: userId, playerIndex: 1, socketId: socket.id, nickname: playerNickname }; // KLÚČOVÁ ZMENA: Ukladáme prezývku
                 console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} ako Hráč 2.`);
             } else {
                 // 3. Ak sú oba sloty obsadené v TEJTO HRY a nie je to rekonexia, hra je plná
@@ -342,7 +365,7 @@ io.on('connection', (socket) => {
 
         socket.emit('playerAssigned', playerIndex);
 
-        console.log(`Aktuálny stav players pre hru ${gameIdFromClient}:`, gameInstance.players.map(p => p ? `Hráč ${p.playerIndex + 1} (User: ${p.userId}, Socket: ${p.socketId})` : 'Voľný'));
+        console.log(`Aktuálny stav players pre hru ${gameIdFromClient}:`, gameInstance.players.map(p => p ? `Hráč ${p.playerIndex + 1} (User: ${p.userId}, Socket: ${p.socketId}, Nickname: ${p.nickname})` : 'Voľný'));
 
         // Načítanie stavu hry z Firestore pri pripojení
         if (dbAdmin) {
@@ -394,6 +417,15 @@ io.on('connection', (socket) => {
         }
 
         if (gameInstance.gameState) {
+            // KLÚČOVÁ ZMENA: Vytvoríme mapu prezývok z aktuálnych hráčov a pridáme ju do gameState
+            const playerNicknamesMap = {};
+            gameInstance.players.forEach(p => {
+                if (p) {
+                    playerNicknamesMap[p.playerIndex] = p.nickname || `Hráč ${p.playerIndex + 1}`;
+                }
+            });
+            gameInstance.gameState.playerNicknames = playerNicknamesMap;
+
             io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState); // Emitujeme aktualizovaný stav všetkým v miestnosti
             const connectedPlayersCount = gameInstance.players.filter(p => p !== null && p.socketId !== null).length;
 
@@ -401,7 +433,6 @@ io.on('connection', (socket) => {
                 io.to(gameInstance.gameId).emit('waitingForPlayers', 'Čaká sa na druhého hráča...');
                 console.log(`Server: Hra ${gameIdFromClient}: Čaká sa na druhého hráča. Aktuálni pripojení hráči: ${connectedPlayersCount}`);
             } else {
-                io.to(gameInstance.gameId).emit('gameStarted');
                 console.log(`Server: Hra ${gameIdFromClient}: Všetci hráči pripojení. Hra môže začať.`);
             }
         } else {
@@ -434,6 +465,7 @@ io.on('connection', (socket) => {
         switch (action.type) {
             case 'updateGameState':
                 if (gameInstance.gameState) {
+                    // KLÚČOVÁ ZMENA: Server preberá celý stav hry, vrátane highlightedLetters a playerNicknames
                     gameInstance.gameState = { ...gameInstance.gameState, ...action.payload };
                     // Uložíme stav do Firestore po každej aktualizácii
                     if (dbAdmin) {
@@ -468,15 +500,20 @@ io.on('connection', (socket) => {
                 }
                 break;
             case 'chatMessage':
+                // KLÚČOVÁ ZMENA: Získame prezývku odosielateľa z gameInstance.players
+                const senderPlayer = gameInstance.players.find(p => p && p.playerIndex === socket.playerIndex);
+                const senderNickname = senderPlayer ? senderPlayer.nickname : `Hráč ${socket.playerIndex + 1}`;
+
                 const fullMessage = {
                     gameId: gameInstance.gameId, // Pridáme gameId k správe pre filtrovanie vo Firestore
                     senderId: socket.id,
                     senderIndex: socket.playerIndex,
+                    senderNickname: senderNickname, // KLÚČOVÁ ZMENA: Pridávame prezývku odosielateľa
                     text: action.payload,
                     timestamp: Date.now()
                 };
                 io.to(gameInstance.gameId).emit('receiveChatMessage', fullMessage);
-                console.log(`Chat správa v hre ${gameInstance.gameId} od Hráča ${socket.playerIndex + 1}: ${action.payload}`);
+                console.log(`Chat správa v hre ${gameInstance.gameId} od ${senderNickname}: ${action.payload}`);
 
                 // NOVÉ: Uložíme chatovú správu do Firestore
                 if (dbAdmin) {
@@ -508,6 +545,14 @@ io.on('connection', (socket) => {
                                 console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore po priradení žolíka:`, e);
                             }
                         }
+                        // KLÚČOVÁ ZMENA: Pri emitovaní gameStateUpdate zabezpečíme, že playerNicknames je aktuálne
+                        const playerNicknamesMap = {};
+                        gameInstance.players.forEach(p => {
+                            if (p) {
+                                playerNicknamesMap[p.playerIndex] = p.nickname || `Hráč ${p.playerIndex + 1}`;
+                            }
+                        });
+                        gameInstance.gameState.playerNicknames = playerNicknamesMap;
                         io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
                     }
                 }
@@ -532,12 +577,12 @@ io.on('connection', (socket) => {
 
         socket.leave(gameId);
 
-        // Nastavíme socketId hráča na null, ale ponecháme userId a playerIndex
+        // Nastavíme socketId hráča na null, ale ponecháme userId, playerIndex a nickname
         const playerSlot = gameInstance.players.find(p => p && p.userId === userId);
         if (playerSlot) {
             playerSlot.socketId = null; // Označíme, že tento userId už nemá aktívny socket
             delete gameInstance.playerSockets[socket.id]; // Odstránime referenciu na starý socket
-            console.log(`Hráč (User: ${userId}) bol odpojený zo slotu hry ${gameId}.`);
+            console.log(`Hráč (User: ${userId}, Nickname: ${playerSlot.nickname}) bol odpojený zo slotu hry ${gameId}.`); // KLÚČOVÁ ZMENA: Logujeme aj prezývku
 
             // Uložíme aktualizovaný stav hráčov do Firestore po odpojení
             if (dbAdmin) {
@@ -574,7 +619,7 @@ io.on('connection', (socket) => {
             console.log(`Hra ${gameId} má stále ${connectedPlayersCount} pripojených klientov.`);
         }
         
-        console.log(`Aktuálny stav players pre hru ${gameId} po odpojení:`, gameInstance.players.map(p => p ? `Hráč ${p.playerIndex + 1} (User: ${p.userId}, Socket: ${p.socketId})` : 'Voľný'));
+        console.log(`Aktuálny stav players pre hru ${gameId} po odpojení:`, gameInstance.players.map(p => p ? `Hráč ${p.playerIndex + 1} (User: ${p.userId}, Socket: ${p.socketId}, Nickname: ${p.nickname})` : 'Voľný'));
     });
 });
 
