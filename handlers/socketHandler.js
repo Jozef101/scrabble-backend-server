@@ -1,3 +1,4 @@
+//backend/handlers/socketHandler.js
 import { games, gameTimeouts, createNewGameInstance, generateInitialGameState } from '../game/gameManager.js';
 import { INACTIVITY_TIMEOUT_MS } from '../config/constants.js';
 import { resetGameInstance } from '../game/gameManager.js'; // Import resetGameInstance
@@ -196,6 +197,11 @@ export default function initializeSocket(io, dbAdmin) {
             }
         });
 
+        // Handler pre ukladanie logov ťahov - TENTO HANDLER JE ZBYTOČNÝ A DUPLIKUJE LOGIKU
+        // Klient uz posiela vsetky akcie pod 'playerAction'
+        // Jeho logika sa presunie do switch-case bloku nižšie
+        // socket.on('turnSubmitted', ...);
+
         // Klient posiela akciu (ťah, výmena, pass)
         socket.on('playerAction', async (action) => {
             const gameInstance = socket.gameInstance;
@@ -205,10 +211,12 @@ export default function initializeSocket(io, dbAdmin) {
                 return;
             }
 
+            // Táto kontrola bola mierne upravená, aby 'turnSubmitted' prešlo
             if (gameInstance.gameState &&
                 action.type !== 'updateGameState' &&
                 action.type !== 'assignJoker' &&
                 action.type !== 'chatMessage' &&
+                action.type !== 'turnSubmitted' && // PRIDANÉ: Umožní priechod akcie 'turnSubmitted'
                 (gameInstance.gameState.currentPlayerIndex !== socket.playerIndex)) {
                 socket.emit('gameError', 'Nie je váš ťah!');
                 console.warn(`Hráč ${socket.playerIndex + 1} sa pokúsil o akciu ${action.type}, ale nie je na ťahu v hre ${gameInstance.gameId}.`);
@@ -300,6 +308,29 @@ export default function initializeSocket(io, dbAdmin) {
                             gameInstance.gameState.playerNicknames = playerNicknamesMap;
                             io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
                         }
+                    }
+                    break;
+                case 'turnSubmitted': // TENTO HANDLER BOL PRESUNUTÝ SEM
+                    if (!dbAdmin) {
+                        console.warn('Firestore Admin SDK nie je k dispozícii. Log ťahu nebude uložený.');
+                        return;
+                    }
+                    if (!gameInstance.gameId || !action.payload) {
+                        console.error('Neplatné dáta pre akciu turnSubmitted:', { gameId: gameInstance.gameId, turnDetails: action.payload });
+                        return;
+                    }
+
+                    console.log(`Server prijal log ťahu pre hru ${gameInstance.gameId} od hráča ${action.payload.playerIndex}`);
+
+                    try {
+                        const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
+                        await turnLogCollectionRef.add(action.payload);
+                        console.log(`Log ťahu pre hru ${gameInstance.gameId} úspešne uložený do Firestore.`);
+                    } catch (error) {
+                        console.error(`CHYBA PRI UKLADANÍ LOGU ŤAHU PRE HRU ${gameInstance.gameId}:`, error);
+                    }
+                    if (gameInstance.gameState) {
+                        io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
                     }
                     break;
                 default:
