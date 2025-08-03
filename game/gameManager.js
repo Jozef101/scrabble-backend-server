@@ -56,6 +56,7 @@ export function generateInitialGameState() {
  * @param {object} gameInstance Objekt hernej inštancie, ktorú chceme resetovať.
  */
 export async function resetGameInstance(gameInstance) {
+    // Všetky zmeny sú už správne, len som pridal komentáre pre objasnenie
     gameInstance.players = [null, null];
     gameInstance.playerSockets = {};
     gameInstance.gameState = null;
@@ -64,12 +65,14 @@ export async function resetGameInstance(gameInstance) {
 
     if (dbAdmin) {
         try {
-            const gameDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gameStates').doc(gameInstance.gameId);
-            await gameDocRef.delete();
+            // Správna cesta k 'gameStates' kolekcii
+            const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
+            await gameStateDocRef.delete();
             console.log(`Stav hry ${gameInstance.gameId} odstránený z Firestore.`);
 
-            const chatMessagesCollectionRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('chatMessages');
-            const q = chatMessagesCollectionRef.where('gameId', '==', gameInstance.gameId).orderBy('timestamp');
+            // Správna cesta ku kolekcii chatMessages
+            const chatMessagesCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('chatMessages');
+            const q = chatMessagesCollectionRef.orderBy('timestamp');
             const querySnapshot = await q.get();
             const deletePromises = [];
             querySnapshot.forEach((doc) => {
@@ -78,7 +81,8 @@ export async function resetGameInstance(gameInstance) {
             await Promise.all(deletePromises);
             console.log(`Chatové správy pre hru ${gameInstance.gameId} odstránené z Firestore.`);
 
-            const gamePlayersDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gamePlayers').doc(gameInstance.gameId);
+            // Správna cesta k players
+            const gamePlayersDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('players').doc('data');
             await gamePlayersDocRef.delete();
             console.log(`Stav hráčov pre hru ${gameInstance.gameId} odstránený z Firestore.`);
 
