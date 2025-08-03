@@ -48,6 +48,7 @@ export function generateInitialGameState() {
         highlightedLetters: [],
         hasInitialGameStateReceived: true,
         playerNicknames: {},
+        turnNumber: 1,
     };
 }
 
@@ -60,30 +61,31 @@ export async function resetGameInstance(gameInstance) {
     gameInstance.playerSockets = {};
     gameInstance.gameState = null;
     gameInstance.isGameStarted = false;
-    console.log(`Herný stav pre hru ${gameInstance.gameId} bol resetovaný.`);
+    console.log(`Herný stav pre hru ${gameInstance.gameId} bol resetovaný v pamäti servera.`);
+}
 
-    if (dbAdmin) {
-        try {
-            const gameDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gameStates').doc(gameInstance.gameId);
-            await gameDocRef.delete();
-            console.log(`Stav hry ${gameInstance.gameId} odstránený z Firestore.`);
+/**
+ * Uloží detaily o ťahu do subkolekcie vo Firestore.
+ * @param {string} gameId Unikátne ID hry.
+ * @param {object} turnDetails Objekt obsahujúci detaily ťahu (napr. kto, aké slová, body, atď.).
+ */
+export async function saveTurnLogToFirestore(gameId, turnDetails) {
+    if (!dbAdmin) {
+        console.warn("Firebase Admin SDK nie je inicializované, turn log nebude uložený.");
+        return;
+    }
 
-            const chatMessagesCollectionRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('chatMessages');
-            const q = chatMessagesCollectionRef.where('gameId', '==', gameInstance.gameId).orderBy('timestamp');
-            const querySnapshot = await q.get();
-            const deletePromises = [];
-            querySnapshot.forEach((doc) => {
-                deletePromises.push(doc.ref.delete());
-            });
-            await Promise.all(deletePromises);
-            console.log(`Chatové správy pre hru ${gameInstance.gameId} odstránené z Firestore.`);
+    try {
+        // --- TOTO JE KĽÚČOVÁ ZMENA: Získanie referencie na subkolekciu 'turnLogs' pod hlavnou kolekciou 'games' ---
+        const turnLogsCollectionRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('games').doc(gameId).collection('turnLogs');
 
-            const gamePlayersDocRef = dbAdmin.collection('artifacts').doc('default-app-id').collection('public').doc('data').collection('gamePlayers').doc(gameInstance.gameId);
-            await gamePlayersDocRef.delete();
-            console.log(`Stav hráčov pre hru ${gameInstance.gameId} odstránený z Firestore.`);
-
-        } catch (e) {
-            console.error(`Chyba pri odstraňovaní stavu hry/chatu/hráčov ${gameInstance.gameId} z Firestore:`, e);
-        }
+        await turnLogsCollectionRef.add({
+            ...turnDetails,
+            gameId,
+            timestamp: Date.now()
+        });
+        console.log(`Turn log pre hru ${gameId} úspešne uložený do subkolekcie turnLogs.`);
+    } catch (e) {
+        console.error(`Chyba pri ukladaní turn logu pre hru ${gameId} do Firestore:`, e);
     }
 }
