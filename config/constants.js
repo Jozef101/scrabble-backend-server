@@ -4,7 +4,7 @@ export const allowedOrigins = ['http://localhost:3000', 'https://skrebl.vercel.a
 
 export const BOARD_SIZE = 15;
 export const RACK_SIZE = 7;
-export const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000; // 60 minút
+export const INACTIVITY_TIMEOUT_MS = 48 * 60 * 60 * 1000; // 48 hodín
 
 export const LETTER_VALUES = {
     'A': 1, 'Á': 4, 'Ä': 10, 'B': 4, 'C': 4, 'Č': 5, 'D': 2, 'Ď': 8, 'E': 1, 'É': 7,
