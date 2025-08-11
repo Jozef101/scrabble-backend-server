@@ -42,19 +42,26 @@ export default function initializeSocket(io, dbAdmin) {
 
             let playerIndex = -1;
             let playerNickname = userId;
+            let playerElo = 1600;
 
             if (dbAdmin) {
                 try {
                     const userDocRef = dbAdmin.collection('users').doc(userId);
                     const userDocSnap = await userDocRef.get();
-                    if (userDocSnap.exists && userDocSnap.data() && userDocSnap.data().nickname) {
-                        playerNickname = userDocSnap.data().nickname;
-                        console.log(`Načítaná prezývka pre užívateľa ${userId}: ${playerNickname}`);
+                    if (userDocSnap.exists && userDocSnap.data()) {
+                        const userData = userDocSnap.data(); // <<< --- ZMENENÉ, aby sme sa vyhli opakovaniu
+                        if (userData.nickname) {
+                            playerNickname = userData.nickname;
+                        }
+                        if (userData.elo) {
+                            playerElo = userData.elo;
+                        }
+                        console.log(`Načítaná prezývka a ELO pre užívateľa ${userId}: ${playerNickname}, ${playerElo}`);
                     } else {
-                        console.log(`Prezývka pre užívateľa ${userId} nebola nájdená vo Firestore.`);
+                        console.log(`Prezývka a ELO pre užívateľa ${userId} neboli nájdené vo Firestore. Používam defaultné hodnoty.`);
                     }
                 } catch (e) {
-                    console.error(`Chyba pri načítaní prezývky pre užívateľa ${userId}:`, e);
+                    console.error(`Chyba pri načítaní prezývky a ELO pre užívateľa ${userId}:`, e);
                 }
             }
 
@@ -86,6 +93,7 @@ export default function initializeSocket(io, dbAdmin) {
                     playerIndex = i;
                     gameInstance.players[i].socketId = socket.id;
                     gameInstance.players[i].nickname = playerNickname;
+                    gameInstance.players[i].elo = playerElo;
                     console.log(`Klient ${socket.id} (User: ${userId}) sa znovu pripojil k hre ${gameIdFromClient} ako Hráč ${playerIndex + 1}.`);
                     break;
                 }
@@ -94,11 +102,11 @@ export default function initializeSocket(io, dbAdmin) {
             if (playerIndex === -1) {
                 if (gameInstance.players[0] === null || (gameInstance.players[0] && gameInstance.players[0].socketId === null)) {
                     playerIndex = 0;
-                    gameInstance.players[0] = { userId: userId, playerIndex: 0, socketId: socket.id, nickname: playerNickname };
+                    gameInstance.players[0] = { userId: userId, playerIndex: 0, socketId: socket.id, nickname: playerNickname, elo: playerElo };
                     console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} ako Hráč 1.`);
                 } else if (gameInstance.players[1] === null || (gameInstance.players[1] && gameInstance.players[1].socketId === null)) {
                     playerIndex = 1;
-                    gameInstance.players[1] = { userId: userId, playerIndex: 1, socketId: socket.id, nickname: playerNickname };
+                    gameInstance.players[1] = { userId: userId, playerIndex: 1, socketId: socket.id, nickname: playerNickname, elo: playerElo };
                     console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} ako Hráč 2.`);
                 } else {
                     socket.emit('gameError', 'Hra je už plná.');
@@ -172,7 +180,8 @@ export default function initializeSocket(io, dbAdmin) {
                     }
                 });
                 gameInstance.gameState.playerNicknames = playerNicknamesMap;
-
+                gameInstance.gameState.players = gameInstance.players;
+                
                 io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
                 const connectedPlayersCount = gameInstance.players.filter(p => p !== null && p.socketId !== null).length;
 
@@ -308,6 +317,7 @@ export default function initializeSocket(io, dbAdmin) {
                                 }
                             });
                             gameInstance.gameState.playerNicknames = playerNicknamesMap;
+                            gameInstance.gameState.players = gameInstance.players;
                             io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
                         }
                     }
@@ -342,6 +352,17 @@ export default function initializeSocket(io, dbAdmin) {
                      }
                      console.log(`Hra ${gameInstance.gameId} skončila. Aktualizujem ELO pre víťaza ${action.payload.winnerId} a porazeného ${action.payload.loserId}.`);
                      await updateEloRatings(action.payload.winnerId, action.payload.loserId);
+                     
+                     if (dbAdmin) {
+                        try {
+                            const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                            await gameDocRef.set({ status: 'finished', endedAt: new Date() }, { merge: true });
+                            console.log(`Stav hry ${gameInstance.gameId} úspešne nastavený na 'finished' vo Firestore.`);
+                        } catch (e) {
+                            console.error(`Chyba pri aktualizácii stavu hry ${gameInstance.gameId} na 'finished':`, e);
+                        }
+                    }
+                     
                      break;
                 default:
                     console.warn(`Neznámy typ akcie: ${action.type}`);

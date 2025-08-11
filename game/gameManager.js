@@ -106,12 +106,12 @@ export async function updateEloRatings(winnerId, loserId) {
 
         const { newWinnerElo, newLoserElo } = calculateNewElo(winnerData, loserData);
 
-        const batch = dbAdmin.firestore().batch();
+        const batch = dbAdmin.batch();
         
-        const winnerRef = dbAdmin.firestore().collection('users').doc(winnerId);
+        const winnerRef = dbAdmin.collection('users').doc(winnerId);
         batch.update(winnerRef, { elo: newWinnerElo, gamesPlayed: admin.firestore.FieldValue.increment(1) });
 
-        const loserRef = dbAdmin.firestore().collection('users').doc(loserId);
+        const loserRef = dbAdmin.collection('users').doc(loserId);
         batch.update(loserRef, { elo: newLoserElo, gamesPlayed: admin.firestore.FieldValue.increment(1) });
 
         await batch.commit();
