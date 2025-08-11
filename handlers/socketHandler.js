@@ -1,13 +1,12 @@
 //backend/handlers/socketHandler.js
-import { games, gameTimeouts, createNewGameInstance, generateInitialGameState } from '../game/gameManager.js';
+import { games, gameTimeouts, createNewGameInstance, generateInitialGameState, updateEloRatings } from '../game/gameManager.js';
 import { INACTIVITY_TIMEOUT_MS } from '../config/constants.js';
-import { resetGameInstance } from '../game/gameManager.js'; // Import resetGameInstance
+import { resetGameInstance } from '../game/gameManager.js';
 
 export default function initializeSocket(io, dbAdmin) {
     io.on('connection', (socket) => {
         console.log(`Nový klient pripojený: ${socket.id}`);
 
-        // Pripojenie hráča k hre
         socket.on('joinGame', async ({ gameId: gameIdFromClient, userId }) => {
             if (!gameIdFromClient) {
                 gameIdFromClient = 'default-scrabble-game';
@@ -20,10 +19,8 @@ export default function initializeSocket(io, dbAdmin) {
                 return;
             }
 
-            // Hľadáme gameInstance najprv v pamäti servera
             let gameInstance = games.get(gameIdFromClient);
 
-            // Ak hra neexistuje v pamäti, vytvoríme novú inštanciu
             if (!gameInstance) {
                 gameInstance = createNewGameInstance(gameIdFromClient);
                 games.set(gameIdFromClient, gameInstance);
@@ -46,7 +43,6 @@ export default function initializeSocket(io, dbAdmin) {
             let playerIndex = -1;
             let playerNickname = userId;
 
-            // Načítanie prezývky používateľa
             if (dbAdmin) {
                 try {
                     const userDocRef = dbAdmin.collection('users').doc(userId);
@@ -62,7 +58,6 @@ export default function initializeSocket(io, dbAdmin) {
                 }
             }
 
-            // Načítanie stavu hráčov z Firestore
             if (dbAdmin) {
                 try {
                     const gamePlayersDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient).collection('players').doc('data');
@@ -74,7 +69,6 @@ export default function initializeSocket(io, dbAdmin) {
                     } else {
                         console.log(`Žiadny uložený stav hráčov pre ${gameIdFromClient} vo Firestore. Inicializujem prázdne sloty.`);
                         gameInstance.players = [null, null];
-                        // Vytvorí 'scrabbleGames/gameIdFromClient/players/data'
                         await gamePlayersDocRef.set({ players: JSON.stringify(gameInstance.players) }, { merge: true });
                     }
                 } catch (e) {
@@ -87,7 +81,6 @@ export default function initializeSocket(io, dbAdmin) {
                 }
             }
 
-            // Priradenie hráča k slotu
             for (let i = 0; i < gameInstance.players.length; i++) {
                 if (gameInstance.players[i] && gameInstance.players[i].userId === userId) {
                     playerIndex = i;
@@ -117,7 +110,6 @@ export default function initializeSocket(io, dbAdmin) {
             gameInstance.playerSockets[socket.id] = socket;
             socket.playerIndex = playerIndex;
 
-            // Uloženie aktualizovaného stavu hráčov do Firestore
             if (dbAdmin) {
                 try {
                     const gamePlayersDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient).collection('players').doc('data');
@@ -131,7 +123,6 @@ export default function initializeSocket(io, dbAdmin) {
             socket.emit('playerAssigned', playerIndex);
             console.log(`Aktuálny stav players pre hru ${gameIdFromClient}:`, gameInstance.players.map(p => p ? `Hráč ${p.playerIndex + 1} (User: ${p.userId}, Socket: ${p.socketId}, Nickname: ${p.nickname})` : 'Voľný'));
 
-            // Načítanie herného stavu z Firestore alebo inicializácia nového
             if (dbAdmin) {
                 try {
                     const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient).collection('gameStates').doc('state');
@@ -197,12 +188,6 @@ export default function initializeSocket(io, dbAdmin) {
             }
         });
 
-        // Handler pre ukladanie logov ťahov - TENTO HANDLER JE ZBYTOČNÝ A DUPLIKUJE LOGIKU
-        // Klient uz posiela vsetky akcie pod 'playerAction'
-        // Jeho logika sa presunie do switch-case bloku nižšie
-        // socket.on('turnSubmitted', ...);
-
-        // Klient posiela akciu (ťah, výmena, pass)
         socket.on('playerAction', async (action) => {
             const gameInstance = socket.gameInstance;
             if (!gameInstance) {
@@ -211,12 +196,11 @@ export default function initializeSocket(io, dbAdmin) {
                 return;
             }
 
-            // Táto kontrola bola mierne upravená, aby 'turnSubmitted' prešlo
             if (gameInstance.gameState &&
                 action.type !== 'updateGameState' &&
                 action.type !== 'assignJoker' &&
                 action.type !== 'chatMessage' &&
-                action.type !== 'turnSubmitted' && // PRIDANÉ: Umožní priechod akcie 'turnSubmitted'
+                action.type !== 'turnSubmitted' &&
                 (gameInstance.gameState.currentPlayerIndex !== socket.playerIndex)) {
                 socket.emit('gameError', 'Nie je váš ťah!');
                 console.warn(`Hráč ${socket.playerIndex + 1} sa pokúsil o akciu ${action.type}, ale nie je na ťahu v hre ${gameInstance.gameId}.`);
@@ -227,6 +211,24 @@ export default function initializeSocket(io, dbAdmin) {
 
             switch (action.type) {
                 case 'updateGameState':
+                    // Skontrolujeme, či hra práve skončila
+                    if (gameInstance.gameState && !gameInstance.gameState.isGameOver && action.payload && action.payload.isGameOver) {
+                        console.log(`Hra ${gameInstance.gameId} skončila. Začínam výpočet ELO.`);
+                        
+                        const player1 = gameInstance.players.find(p => p.playerIndex === 0);
+                        const player2 = gameInstance.players.find(p => p.playerIndex === 1);
+                        const player1Score = action.payload.playerScores[0];
+                        const player2Score = action.payload.playerScores[1];
+
+                        if (player1Score > player2Score) {
+                            await updateEloRatings(player1.userId, player2.userId);
+                        } else if (player2Score > player1Score) {
+                            await updateEloRatings(player2.userId, player1.userId);
+                        } else {
+                            console.log(`Hra ${gameInstance.gameId} skončila remízou. ELO skóre sa nemení.`);
+                        }
+                    }
+
                     if (gameInstance.gameState) {
                         gameInstance.gameState = { ...gameInstance.gameState, ...action.payload };
                         if (dbAdmin) {
@@ -310,7 +312,7 @@ export default function initializeSocket(io, dbAdmin) {
                         }
                     }
                     break;
-                case 'turnSubmitted': // TENTO HANDLER BOL PRESUNUTÝ SEM
+                case 'turnSubmitted':
                     if (!dbAdmin) {
                         console.warn('Firestore Admin SDK nie je k dispozícii. Log ťahu nebude uložený.');
                         return;
@@ -333,13 +335,20 @@ export default function initializeSocket(io, dbAdmin) {
                         io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
                     }
                     break;
+                case 'gameOver':
+                    if (!action.payload || !action.payload.winnerId || !action.payload.loserId) {
+                     console.error('Neplatné dáta pre akciu gameOver:', action.payload);
+                     return;
+                     }
+                     console.log(`Hra ${gameInstance.gameId} skončila. Aktualizujem ELO pre víťaza ${action.payload.winnerId} a porazeného ${action.payload.loserId}.`);
+                     await updateEloRatings(action.payload.winnerId, action.payload.loserId);
+                     break;
                 default:
                     console.warn(`Neznámy typ akcie: ${action.type}`);
                     break;
             }
         });
 
-        // Odpojenie klienta
         socket.on('disconnect', async () => {
             console.log(`Klient odpojený: ${socket.id}`);
             const gameInstance = socket.gameInstance;
@@ -376,8 +385,7 @@ export default function initializeSocket(io, dbAdmin) {
 
             if (connectedPlayersCount === 0) {
                 console.log(`Hra ${gameId}: Všetci klienti odpojení. Nastavujem timeout pre vymazanie z pamäte.`);
-                const timeoutId = setTimeout(async () => { // Zmenené na async funkciu
-                    // Teraz voláme resetGameInstance aj v timeoute
+                const timeoutId = setTimeout(async () => {
                     await resetGameInstance(gameInstance);
                     games.delete(gameId);
                     gameTimeouts.delete(gameId);
