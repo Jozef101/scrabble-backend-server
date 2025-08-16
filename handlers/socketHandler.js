@@ -26,9 +26,7 @@ export default function initializeSocket(io, dbAdmin) {
                 games.set(gameIdFromClient, gameInstance);
                 console.log(`Vytvorená nová inštancia hry v pamäti s ID: ${gameIdFromClient}`);
             }
-
             socket.join(gameIdFromClient);
-            console.log(`Klient ${socket.id} sa pripojil do roomky: ${gameIdFromClient}`);
 
             if (gameTimeouts.has(gameIdFromClient)) {
                 clearTimeout(gameTimeouts.get(gameIdFromClient));
@@ -56,7 +54,6 @@ export default function initializeSocket(io, dbAdmin) {
                         if (userData.elo) {
                             playerElo = userData.elo;
                         }
-                        console.log(`Načítaná prezývka a ELO pre užívateľa ${userId}: ${playerNickname}, ${playerElo}`);
                     } else {
                         console.log(`Prezývka a ELO pre užívateľa ${userId} neboli nájdené vo Firestore. Používam defaultné hodnoty.`);
                     }
@@ -72,9 +69,7 @@ export default function initializeSocket(io, dbAdmin) {
 
                     if (docSnap.exists && docSnap.data() && docSnap.data().players) {
                         gameInstance.players = JSON.parse(docSnap.data().players);
-                        console.log(`Stav hráčov pre hru ${gameIdFromClient} načítaný z Firestore.`);
                     } else {
-                        console.log(`Žiadny uložený stav hráčov pre ${gameIdFromClient} vo Firestore. Inicializujem prázdne sloty.`);
                         gameInstance.players = [null, null];
                         await gamePlayersDocRef.set({ players: JSON.stringify(gameInstance.players) }, { merge: true });
                     }
@@ -122,14 +117,12 @@ export default function initializeSocket(io, dbAdmin) {
                 try {
                     const gamePlayersDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient).collection('players').doc('data');
                     await gamePlayersDocRef.set({ players: JSON.stringify(gameInstance.players) }, { merge: true });
-                    console.log(`Stav hráčov pre hru ${gameIdFromClient} uložený do Firestore po pripojení.`);
                 } catch (e) {
                     console.error(`Chyba pri ukladaní stavu hráčov ${gameIdFromClient} do Firestore po pripojení:`, e);
                 }
             }
 
             socket.emit('playerAssigned', playerIndex);
-            console.log(`Aktuálny stav players pre hru ${gameIdFromClient}:`, gameInstance.players.map(p => p ? `Hráč ${p.playerIndex + 1} (User: ${p.userId}, Socket: ${p.socketId}, Nickname: ${p.nickname})` : 'Voľný'));
 
             if (dbAdmin) {
                 try {
@@ -140,9 +133,7 @@ export default function initializeSocket(io, dbAdmin) {
                         const loadedState = JSON.parse(docSnap.data().gameState);
                         gameInstance.gameState = loadedState;
                         gameInstance.isGameStarted = true;
-                        console.log(`Stav hry ${gameIdFromClient} načítaný z Firestore.`);
                     } else {
-                        console.log(`Žiadny uložený stav hry pre ${gameIdFromClient} vo Firestore. Inicializujem nový.`);
                         gameInstance.gameState = generateInitialGameState();
                         gameInstance.isGameStarted = true;
                         await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
@@ -156,8 +147,8 @@ export default function initializeSocket(io, dbAdmin) {
                     querySnapshot.forEach((doc) => {
                         chatHistory.push(doc.data());
                     });
+                    gameInstance.chatMessages = chatHistory;
                     socket.emit('chatHistory', chatHistory);
-                    console.log(`Server: História chatu pre hru ${gameIdFromClient} načítaná z Firestore (${chatHistory.length} správ) a odoslaná klientovi.`);
                 } catch (e) {
                     console.error(`Chyba pri načítaní/inicializácii stavu hry alebo chatu ${gameIdFromClient} z Firestore:`, e);
                     if (!gameInstance.gameState) {
@@ -244,7 +235,6 @@ export default function initializeSocket(io, dbAdmin) {
                             try {
                                 const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
                                 await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
-                                console.log(`Stav hry ${gameInstance.gameId} uložený do Firestore z playerAction.`);
                             } catch (e) {
                                 console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z playerAction:`, e);
                             }
@@ -256,12 +246,10 @@ export default function initializeSocket(io, dbAdmin) {
                     if (!gameInstance.gameState) {
                         gameInstance.gameState = generateInitialGameState();
                         gameInstance.isGameStarted = true;
-                        console.log(`Herný stav pre hru ${gameInstance.gameId} inicializovaný serverom na žiadosť klienta.`);
                         if (dbAdmin) {
                             try {
                                 const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
                                 await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
-                                console.log(`Inicializovaný stav hry ${gameInstance.gameId} uložený do Firestore.`);
                             } catch (e) {
                                 console.error(`Chyba pri ukladaní inicializovaného stavu hry ${gameInstance.gameId} do Firestore:`, e);
                             }
@@ -270,25 +258,42 @@ export default function initializeSocket(io, dbAdmin) {
                     }
                     break;
                 case 'chatMessage':
-                    const senderPlayer = gameInstance.players.find(p => p && p.playerIndex === socket.playerIndex);
-                    const senderNickname = senderPlayer ? senderPlayer.nickname : `Hráč ${socket.playerIndex + 1}`;
+                    const senderPlayer = gameInstance.players.find(p => p?.playerIndex === socket.playerIndex);
+                    const senderNickname = senderPlayer?.nickname || `Hráč ${socket.playerIndex + 1}`;
+                    const senderUserId = senderPlayer?.userId || socket.userId;
 
                     const fullMessage = {
                         gameId: gameInstance.gameId,
-                        senderId: socket.id,
+                        senderId: senderUserId,
                         senderIndex: socket.playerIndex,
                         senderNickname: senderNickname,
                         text: action.payload,
-                        timestamp: Date.now()
+                        timestamp: Date.now(),
+                        seen: {}
                     };
+
+                    // Odosielateľ už správu videl
+                    fullMessage.seen[socket.playerIndex] = true;
+
+                    // Ostatní hráči
+                    gameInstance.players
+                        .filter(p => p && p.playerIndex !== socket.playerIndex)
+                        .forEach(p => {
+                            fullMessage.seen[p.playerIndex] = false;
+                        });
+                    
+                    gameInstance.chatMessages = gameInstance.chatMessages || [];
+                    gameInstance.chatMessages.push(fullMessage);
+
                     io.to(gameInstance.gameId).emit('receiveChatMessage', fullMessage);
-                    console.log(`Chat správa v hre ${gameInstance.gameId} od ${senderNickname}: ${action.payload}`);
 
                     if (dbAdmin) {
                         try {
-                            const chatMessagesCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('chatMessages');
+                            const chatMessagesCollectionRef = dbAdmin
+                                .collection('scrabbleGames')
+                                .doc(gameInstance.gameId)
+                                .collection('chatMessages');
                             await chatMessagesCollectionRef.add(fullMessage);
-                            console.log(`Server: Ukladám chat správu pre hru ${gameInstance.gameId} do Firestore.`);
                         } catch (e) {
                             console.error(`Chyba pri ukladaní chatovej správy pre hru ${gameInstance.gameId} do Firestore:`, e);
                         }
@@ -305,7 +310,6 @@ export default function initializeSocket(io, dbAdmin) {
                                 try {
                                     const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
                                     await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
-                                    console.log(`Stav hry ${gameInstance.gameId} uložený do Firestore po priradení žolíka.`);
                                 } catch (e) {
                                     console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore po priradení žolíka:`, e);
                                 }
@@ -332,12 +336,9 @@ export default function initializeSocket(io, dbAdmin) {
                         return;
                     }
 
-                    console.log(`Server prijal log ťahu pre hru ${gameInstance.gameId} od hráča ${action.payload.playerIndex}`);
-
                     try {
                         const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
                         await turnLogCollectionRef.add(action.payload);
-                        console.log(`Log ťahu pre hru ${gameInstance.gameId} úspešne uložený do Firestore.`);
                     } catch (error) {
                         console.error(`CHYBA PRI UKLADANÍ LOGU ŤAHU PRE HRU ${gameInstance.gameId}:`, error);
                     }
@@ -357,7 +358,6 @@ export default function initializeSocket(io, dbAdmin) {
                         try {
                             const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
                             await gameDocRef.set({ status: 'finished', endedAt: new Date() }, { merge: true });
-                            console.log(`Stav hry ${gameInstance.gameId} úspešne nastavený na 'finished' vo Firestore.`);
                         } catch (e) {
                             console.error(`Chyba pri aktualizácii stavu hry ${gameInstance.gameId} na 'finished':`, e);
                         }
@@ -369,6 +369,56 @@ export default function initializeSocket(io, dbAdmin) {
                     break;
             }
         });
+
+        socket.on('markMessagesSeen', async ({ gameId, playerIndex }) => {
+    const game = games.get(gameId);
+
+    if (!game) {
+        console.warn(`Hra s ID ${gameId} nebola nájdená pre markMessagesSeen.`);
+        return;
+    }
+
+    game.chatMessages = game.chatMessages || [];
+    
+    if (dbAdmin) {
+        try {
+            const chatMessagesCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameId).collection('chatMessages');
+
+            // Nájdeme a prejdeme všetky správy, ktoré neboli prečítané
+            const q = chatMessagesCollectionRef.where(`seen.${playerIndex}`, '==', false);
+            const querySnapshot = await q.get();
+
+            if (querySnapshot.empty) {
+                return;
+            }
+
+            const batch = dbAdmin.batch();
+            querySnapshot.forEach(doc => {
+                const messageData = doc.data();
+                const docRef = doc.ref;
+
+                // Označíme správu ako prečítanú aj v pamäti servera, aby bola konzistentná
+                // Hľadáme správu v pamäti na základe timestampu (alebo inej unikátnej vlastnosti)
+                const msgInCache = game.chatMessages.find(msg => msg.timestamp === messageData.timestamp);
+                if (msgInCache) {
+                    if (typeof msgInCache.seen !== 'object' || msgInCache.seen === null) {
+                        msgInCache.seen = {};
+                    }
+                    msgInCache.seen[playerIndex] = true;
+                }
+                
+                // Pripravíme zmenu pre batch update v databáze
+                batch.update(docRef, { [`seen.${playerIndex}`]: true });
+            });
+            await batch.commit();
+        } catch (e) {
+            console.error(`Chyba pri aktualizácii 'seen' do Firestore pre hru ${gameId}:`, e);
+        }
+    }
+
+    // Odošleme potvrdenie späť klientovi
+    socket.emit('messagesMarkedAsSeen', { gameId, playerIndex });
+});
 
         socket.on('disconnect', async () => {
             console.log(`Klient odpojený: ${socket.id}`);
@@ -393,7 +443,6 @@ export default function initializeSocket(io, dbAdmin) {
                     try {
                         const gamePlayersDocRef = dbAdmin.collection('scrabbleGames').doc(gameId).collection('players').doc('data');
                         await gamePlayersDocRef.set({ players: JSON.stringify(gameInstance.players) }, { merge: true });
-                        console.log(`Stav hráčov pre hru ${gameId} uložený do Firestore po odpojení.`);
                     } catch (e) {
                         console.error(`Chyba pri ukladaní stavu hráčov ${gameId} do Firestore po odpojení:`, e);
                     }
