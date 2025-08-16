@@ -3,6 +3,22 @@ import { games, gameTimeouts, createNewGameInstance, generateInitialGameState, u
 import { INACTIVITY_TIMEOUT_MS } from '../config/constants.js';
 import { resetGameInstance } from '../game/gameManager.js';
 
+// NOVÁ FUNKCIA: Počíta, koľko políčok na doske obsahuje písmeno
+const countTilesOnBoard = (board) => {
+    let count = 0;
+    if (board && Array.isArray(board)) {
+        for (const row of board) {
+            for (const tile of row) {
+                // Počítame len políčka, ktoré majú pridelené písmeno
+                if (tile && tile.letter && tile.letter !== '') {
+                    count++;
+                }
+            }
+        }
+    }
+    return count;
+};
+
 export default function initializeSocket(io, dbAdmin) {
     io.on('connection', (socket) => {
         console.log(`Nový klient pripojený: ${socket.id}`);
@@ -211,30 +227,39 @@ export default function initializeSocket(io, dbAdmin) {
 
             switch (action.type) {
                 case 'updateGameState':
-                    // Skontrolujeme, či hra práve skončila
-                    if (gameInstance.gameState && !gameInstance.gameState.isGameOver && action.payload && action.payload.isGameOver) {
-                        console.log(`Hra ${gameInstance.gameId} skončila. Začínam výpočet ELO.`);
-                        
-                        const player1 = gameInstance.players.find(p => p.playerIndex === 0);
-                        const player2 = gameInstance.players.find(p => p.playerIndex === 1);
-                        const player1Score = action.payload.playerScores[0];
-                        const player2Score = action.payload.playerScores[1];
-
-                        if (player1Score > player2Score) {
-                            await updateEloRatings(player1.userId, player2.userId);
-                        } else if (player2Score > player1Score) {
-                            await updateEloRatings(player2.userId, player1.userId);
-                        } else {
-                            console.log(`Hra ${gameInstance.gameId} skončila remízou. ELO skóre sa nemení.`);
-                        }
-                    }
-
                     if (gameInstance.gameState) {
                         gameInstance.gameState = { ...gameInstance.gameState, ...action.payload };
+                        
+                        // ZMENA: Namiesto balíka počítame písmená na doske
+                        const tilesOnBoardCount = countTilesOnBoard(gameInstance.gameState.board);
+                        
+                        // Skontrolujeme, či hra práve skončila
+                        if (gameInstance.gameState && !gameInstance.gameState.isGameOver && action.payload && action.payload.isGameOver) {
+                            console.log(`Hra ${gameInstance.gameId} skončila. Začínam výpočet ELO.`);
+                            
+                            const player1 = gameInstance.players.find(p => p.playerIndex === 0);
+                            const player2 = gameInstance.players.find(p => p.playerIndex === 1);
+                            const player1Score = action.payload.playerScores[0];
+                            const player2Score = action.payload.playerScores[1];
+
+                            if (player1Score > player2Score) {
+                                await updateEloRatings(player1.userId, player2.userId);
+                            } else if (player2Score > player1Score) {
+                                await updateEloRatings(player2.userId, player1.userId);
+                            } else {
+                                console.log(`Hra ${gameInstance.gameId} skončila remízou. ELO skóre sa nemení.`);
+                            }
+                        }
+
                         if (dbAdmin) {
                             try {
                                 const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
                                 await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+
+                                // ZMENA: Uložíme počet položených písmen do hlavného dokumentu hry
+                                const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                                await gameDocRef.update({ progress: tilesOnBoardCount });
+
                             } catch (e) {
                                 console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z playerAction:`, e);
                             }
@@ -371,7 +396,7 @@ export default function initializeSocket(io, dbAdmin) {
         });
 
         socket.on('markMessagesSeen', async ({ gameId, playerIndex }) => {
-    const game = games.get(gameId);
+            const game = games.get(gameId);
 
     if (!game) {
         console.warn(`Hra s ID ${gameId} nebola nájdená pre markMessagesSeen.`);
