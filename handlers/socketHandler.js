@@ -197,6 +197,27 @@ export default function initializeSocket(io, dbAdmin) {
                     console.log(`Server: Hra ${gameIdFromClient}: Čaká sa na druhého hráča. Aktuálni pripojení hráči: ${connectedPlayersCount}`);
                 } else {
                     console.log(`Server: Hra ${gameIdFromClient}: Všetci hráči pripojení. Hra môže začať.`);
+
+                    if (dbAdmin) {
+                        try {
+                            const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient);
+                            await gameDocRef.set({
+                                status: 'in-progress',
+                                currentPlayerIndex: gameInstance.gameState.currentPlayerIndex,
+                                progress: 0, // Na začiatku je progres 0
+                                players: gameInstance.players
+                                    .filter(p => p !== null)
+                                    .map(p => ({
+                                        id: p.userId,
+                                        nickname: p.nickname,
+                                        playerIndex: p.playerIndex
+                                    }))
+                            }, { merge: true });
+                        } catch (e) {
+                            console.error(`Chyba pri ukladaní počiatočného stavu hry ${gameIdFromClient} do Firestore po pripojení druhého hráča:`, e);
+                        }
+                    }
+
                 }
             } else {
                 console.error(`Server: Kritická chyba: GameState pre hru ${gameIdFromClient} je stále null po všetkých pokusoch o inicializáciu.`);
@@ -258,7 +279,17 @@ export default function initializeSocket(io, dbAdmin) {
 
                                 // ZMENA: Uložíme počet položených písmen do hlavného dokumentu hry
                                 const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
-                                await gameDocRef.update({ progress: tilesOnBoardCount });
+                                await gameDocRef.update({
+                                    progress: tilesOnBoardCount,
+                                    currentPlayerIndex: gameInstance.gameState.currentPlayerIndex,
+                                    players: gameInstance.players
+                                    .filter(p => p !== null)
+                                    .map(p => ({
+                                        id: p.userId,
+                                        nickname: p.nickname,
+                                        playerIndex: p.playerIndex
+                                    }))
+                                });
 
                             } catch (e) {
                                 console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z playerAction:`, e);
