@@ -142,6 +142,19 @@ export default function initializeSocket(io, dbAdmin) {
 
             if (dbAdmin) {
                 try {
+                    const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient);
+                    const gameDocSnap = await gameDocRef.get();
+                    const gameData = gameDocSnap.data();
+
+                    // Načítaj aktuálny progress z hlavného dokumentu
+                    const progressFromDB = gameData?.progress ?? 0;
+
+                    // Skontroluj, či hlavný dokument hry obsahuje aj skóre. Ak nie, pridaj ich
+                    if (!gameData || !gameData.scores || gameData.scores.length === 0) {
+                        await gameDocRef.set({ scores: [0, 0] }, { merge: true });
+                    }
+                    
+                    // Načítaj stav hry z podkolekcie
                     const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient).collection('gameStates').doc('state');
                     const docSnap = await gameStateDocRef.get();
 
@@ -156,15 +169,37 @@ export default function initializeSocket(io, dbAdmin) {
                         console.log(`Nový stav hry ${gameIdFromClient} inicializovaný a uložený do Firestore.`);
                     }
 
-                    const chatMessagesCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient).collection('chatMessages');
-                    const q = chatMessagesCollectionRef.orderBy('timestamp');
-                    const querySnapshot = await q.get();
-                    const chatHistory = [];
-                    querySnapshot.forEach((doc) => {
-                        chatHistory.push(doc.data());
+                    // Získaj stav progresu priamo z dát.
+                    const actualProgress = countTilesOnBoard(gameInstance.gameState.board);
+
+                    // Uložíme aktuálny progress do hlavného dokumentu po pripojení hráča
+                    await gameDocRef.update({ progress: actualProgress }, { merge: true });
+
+                    // Odoslanie stavu hry klientovi
+                    const playerNicknamesMap = {};
+                    gameInstance.players.forEach(p => {
+                        if (p) {
+                            playerNicknamesMap[p.playerIndex] = p.nickname || `Hráč ${p.playerIndex + 1}`;
+                        }
                     });
-                    gameInstance.chatMessages = chatHistory;
-                    socket.emit('chatHistory', chatHistory);
+                    gameInstance.gameState.playerNicknames = playerNicknamesMap;
+                    gameInstance.gameState.players = gameInstance.players;
+                    
+                    io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+
+                    // Pošleme aj informáciu o progres bare do lobby
+                    const gameDetails = {
+                        id: gameIdFromClient,
+                        currentPlayerIndex: gameInstance.gameState.currentPlayerIndex,
+                        progress: actualProgress, // Posielame skutočný progress
+                        scores: gameInstance.gameState.playerScores || [0, 0] // Ak skóre chýba, inicializujeme na [0, 0]
+                    };
+
+                    // Toto by mal zachytiť front-end komponent, ktorý zobrazuje lobby
+                    io.to(gameIdFromClient).emit('gameProgressUpdate', gameDetails);
+
+                    // ... (zvyšok tvojho kódu)
+
                 } catch (e) {
                     console.error(`Chyba pri načítaní/inicializácii stavu hry alebo chatu ${gameIdFromClient} z Firestore:`, e);
                     if (!gameInstance.gameState) {
@@ -287,8 +322,10 @@ export default function initializeSocket(io, dbAdmin) {
                                     .map(p => ({
                                         id: p.userId,
                                         nickname: p.nickname,
-                                        playerIndex: p.playerIndex
-                                    }))
+                                        playerIndex: p.playerIndex,
+                                        score: gameInstance.gameState.playerScores ? gameInstance.gameState.playerScores[p.playerIndex] : 0
+                                    })),
+                                    scores: gameInstance.gameState.playerScores || [0, 0]
                                 });
 
                             } catch (e) {
