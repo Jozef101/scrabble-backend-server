@@ -486,52 +486,55 @@ export default function initializeSocket(io, dbAdmin) {
         socket.on('markMessagesSeen', async ({ gameId, playerIndex }) => {
             const game = games.get(gameId);
 
-    if (!game) {
-        console.warn(`Hra s ID ${gameId} nebola nájdená pre markMessagesSeen.`);
-        return;
-    }
-
-    game.chatMessages = game.chatMessages || [];
-    
-    if (dbAdmin) {
-        try {
-            const chatMessagesCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameId).collection('chatMessages');
-
-            // Nájdeme a prejdeme všetky správy, ktoré neboli prečítané
-            const q = chatMessagesCollectionRef.where(`seen.${playerIndex}`, '==', false);
-            const querySnapshot = await q.get();
-
-            if (querySnapshot.empty) {
+            if (!game) {
+                console.warn(`Hra s ID ${gameId} nebola nájdená pre markMessagesSeen.`);
                 return;
             }
 
-            const batch = dbAdmin.batch();
-            querySnapshot.forEach(doc => {
-                const messageData = doc.data();
-                const docRef = doc.ref;
+            game.chatMessages = game.chatMessages || [];
+            
+            if (dbAdmin) {
+                try {
+                    const chatMessagesCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameId).collection('chatMessages');
 
-                // Označíme správu ako prečítanú aj v pamäti servera, aby bola konzistentná
-                // Hľadáme správu v pamäti na základe timestampu (alebo inej unikátnej vlastnosti)
-                const msgInCache = game.chatMessages.find(msg => msg.timestamp === messageData.timestamp);
-                if (msgInCache) {
-                    if (typeof msgInCache.seen !== 'object' || msgInCache.seen === null) {
-                        msgInCache.seen = {};
+                    // Nájdeme a prejdeme všetky správy, ktoré neboli prečítané
+                    const q = chatMessagesCollectionRef.where(`seen.${playerIndex}`, '==', false);
+                    const querySnapshot = await q.get();
+
+                    if (querySnapshot.empty) {
+                        socket.emit('messagesMarkedAsSeen', { gameId, playerIndex });
+                        return;
                     }
-                    msgInCache.seen[playerIndex] = true;
-                }
-                
-                // Pripravíme zmenu pre batch update v databáze
-                batch.update(docRef, { [`seen.${playerIndex}`]: true });
-            });
-            await batch.commit();
-        } catch (e) {
-            console.error(`Chyba pri aktualizácii 'seen' do Firestore pre hru ${gameId}:`, e);
-        }
-    }
 
-    // Odošleme potvrdenie späť klientovi
-    socket.emit('messagesMarkedAsSeen', { gameId, playerIndex });
-});
+                    const batch = dbAdmin.batch();
+                    querySnapshot.forEach(doc => {
+                        const messageData = doc.data();
+                        const docRef = doc.ref;
+
+                        // Označíme správu ako prečítanú aj v pamäti servera, aby bola konzistentná
+                        // Hľadáme správu v pamäti na základe timestampu (alebo inej unikátnej vlastnosti)
+                        const msgInCache = game.chatMessages.find(msg => msg.timestamp === messageData.timestamp);
+                        if (msgInCache) {
+                            if (typeof msgInCache.seen !== 'object' || msgInCache.seen === null) {
+                                msgInCache.seen = {};
+                            }
+                            msgInCache.seen[playerIndex] = true;
+                        }
+                        
+                        // Pripravíme zmenu pre batch update v databáze
+                        batch.update(docRef, { [`seen.${playerIndex}`]: true });
+                    });
+                    await batch.commit();
+                    io.to(gameId).emit('chatHistory', game.chatMessages);
+                    console.log(`Správy pre hru ${gameId} boli označené ako prečítané pre hráča ${playerIndex}. Odoslaná aktualizácia chatu všetkým klientom.`);
+                } catch (e) {
+                    console.error(`Chyba pri aktualizácii 'seen' do Firestore pre hru ${gameId}:`, e);
+                }
+            }
+
+            // Odošleme potvrdenie späť klientovi
+            socket.emit('messagesMarkedAsSeen', { gameId, playerIndex });
+        });
 
         socket.on('disconnect', async () => {
             console.log(`Klient odpojený: ${socket.id}`);
