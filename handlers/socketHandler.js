@@ -170,10 +170,10 @@ export default function initializeSocket(io, dbAdmin) {
                     }
 
                     // Získaj stav progresu priamo z dát.
-                    const actualProgress = countTilesOnBoard(gameInstance.gameState.board);
+                    // const actualProgress = countTilesOnBoard(gameInstance.gameState.board);
 
                     // Uložíme aktuálny progress do hlavného dokumentu po pripojení hráča
-                    await gameDocRef.update({ progress: actualProgress }, { merge: true });
+                    // await gameDocRef.update({ progress: actualProgress }, { merge: true });
 
                     // Odoslanie stavu hry klientovi
                     const playerNicknamesMap = {};
@@ -186,12 +186,32 @@ export default function initializeSocket(io, dbAdmin) {
                     gameInstance.gameState.players = gameInstance.players;
                     
                     io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                    
+                    // Načítanie a odoslanie chatovej histórie
+                    try {
+                        const chatHistoryCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient).collection('chatMessages');
+                        const querySnapshot = await chatHistoryCollectionRef.orderBy('timestamp').get();
+                        
+                        const chatHistory = [];
+                        querySnapshot.forEach(doc => {
+                            chatHistory.push(doc.data());
+                        });
+                        
+                        // Uloženie do pamäte servera pre rýchly prístup
+                        gameInstance.chatMessages = chatHistory;
+
+                        // Odoslanie histórie chatu iba TOMUTO klientovi, ktorý sa práve pripojil
+                        socket.emit('chatHistory', chatHistory);
+                        console.log(`Odoslaná história chatu pre hru ${gameIdFromClient} klientovi ${socket.id}. Správ: ${chatHistory.length}`);
+                    } catch (e) {
+                        console.error(`Chyba pri načítavaní chatovej histórie pre hru ${gameIdFromClient} z Firestore:`, e);
+                    }
 
                     // Pošleme aj informáciu o progres bare do lobby
                     const gameDetails = {
                         id: gameIdFromClient,
                         currentPlayerIndex: gameInstance.gameState.currentPlayerIndex,
-                        progress: actualProgress, // Posielame skutočný progress
+                        // progress: actualProgress, // Posielame skutočný progress
                         scores: gameInstance.gameState.playerScores || [0, 0] // Ak skóre chýba, inicializujeme na [0, 0]
                     };
 
