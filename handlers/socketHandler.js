@@ -126,15 +126,18 @@ export default function initializeSocket(io, dbAdmin) {
                 if (gameInstance.players[0] === null) {
                     playerIndex = 0;
                     gameInstance.players[0] = { userId: userId, playerIndex: 0, socketId: socket.id, nickname: playerNickname, elo: playerElo };
-                    console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} do slotu 1.`);
+                    console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} ako Hráč 1.`);
                 } else if (gameInstance.players[1] === null) {
                     playerIndex = 1;
                     gameInstance.players[1] = { userId: userId, playerIndex: 1, socketId: socket.id, nickname: playerNickname, elo: playerElo };
-                    console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} do slotu 2.`);
+                    console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} ako Hráč 2.`);
                 } else {
-                    socket.emit('gameError', 'Hra je už plná.');
-                    console.log(`Klient ${socket.id} (User: ${userId}) sa nemohol pripojiť k hre ${gameIdFromClient}, hra je plná.`);
-                    return;
+                    // OBA SLOTY SÚ PLNÉ - POUŽÍVATEĽ SA PRIPÁJA AKO DIVÁK
+                    socket.role = 'spectator';
+                    playerIndex = null; // Divák nemá index hráča
+                    console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k plnej hre ${gameIdFromClient} ako DIVÁK.`);
+                    // Nevysielame 'gameError', pretože je to v poriadku. Kód pokračuje ďalej,
+                    // aby aj divák dostal aktuálny stav hry.
                 }
             }
 
