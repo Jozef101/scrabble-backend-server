@@ -42,6 +42,35 @@ export default function initializeSocket(io, dbAdmin) {
                 games.set(gameIdFromClient, gameInstance);
                 console.log(`Vytvorená nová inštancia hry v pamäti s ID: ${gameIdFromClient}`);
             }
+
+            if (dbAdmin) {
+                try {
+                    const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient);
+                    const gameDocSnap = await gameDocRef.get();
+
+                    if (gameDocSnap.exists) {
+                        const gameData = gameDocSnap.data();
+                        if (gameData.players && Array.isArray(gameData.players)) {
+                            // Prekopíruj hráčov z DB do našej in-memory inštancie
+                            gameData.players.forEach(playerFromDb => {
+                                if (playerFromDb && playerFromDb.playerIndex !== undefined) {
+                                    // Uložíme základné info, socketId sa doplní, keď sa hráč pripojí
+                                    gameInstance.players[playerFromDb.playerIndex] = {
+                                        userId: playerFromDb.id,
+                                        nickname: playerFromDb.nickname,
+                                        playerIndex: playerFromDb.playerIndex,
+                                        socketId: null // Dôležité: socketId zatiaľ nie je známe
+                                    };
+                                }
+                            });
+                            console.log(`Hráči inicializovaní z Firestore pre hru ${gameIdFromClient}:`, gameInstance.players.map(p => p?.userId));
+                        }
+                    }
+                } catch (e) {
+                    console.error(`Chyba pri inicializácii hráčov z Firestore pre hru ${gameIdFromClient}:`, e);
+                }
+            }
+
             socket.join(gameIdFromClient);
 
             if (gameTimeouts.has(gameIdFromClient)) {
@@ -77,26 +106,9 @@ export default function initializeSocket(io, dbAdmin) {
                     console.error(`Chyba pri načítaní prezývky a ELO pre užívateľa ${userId}:`, e);
                 }
             }
-
-            if (dbAdmin) {
-                try {
-                    const gamePlayersDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient).collection('players').doc('data');
-                    const docSnap = await gamePlayersDocRef.get();
-
-                    if (docSnap.exists && docSnap.data() && docSnap.data().players) {
-                        gameInstance.players = JSON.parse(docSnap.data().players);
-                    } else {
-                        gameInstance.players = [null, null];
-                        await gamePlayersDocRef.set({ players: JSON.stringify(gameInstance.players) }, { merge: true });
-                    }
-                } catch (e) {
-                    console.error(`Chyba pri načítaní/inicializácii stavu hráčov ${gameIdFromClient} z Firestore:`, e);
-                    gameInstance.players = [null, null];
-                }
-            } else {
-                if (!gameInstance.players || gameInstance.players.length === 0) {
-                    gameInstance.players = [null, null];
-                }
+           
+            if (!gameInstance.players || gameInstance.players.length === 0) {
+                gameInstance.players = [null, null];
             }
 
             for (let i = 0; i < gameInstance.players.length; i++) {
@@ -111,14 +123,14 @@ export default function initializeSocket(io, dbAdmin) {
             }
 
             if (playerIndex === -1) {
-                if (gameInstance.players[0] === null || (gameInstance.players[0] && gameInstance.players[0].socketId === null)) {
+                if (gameInstance.players[0] === null) {
                     playerIndex = 0;
                     gameInstance.players[0] = { userId: userId, playerIndex: 0, socketId: socket.id, nickname: playerNickname, elo: playerElo };
-                    console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} ako Hráč 1.`);
-                } else if (gameInstance.players[1] === null || (gameInstance.players[1] && gameInstance.players[1].socketId === null)) {
+                    console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} do slotu 1.`);
+                } else if (gameInstance.players[1] === null) {
                     playerIndex = 1;
                     gameInstance.players[1] = { userId: userId, playerIndex: 1, socketId: socket.id, nickname: playerNickname, elo: playerElo };
-                    console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} ako Hráč 2.`);
+                    console.log(`Klient ${socket.id} (User: ${userId}) sa pripojil k hre ${gameIdFromClient} do slotu 2.`);
                 } else {
                     socket.emit('gameError', 'Hra je už plná.');
                     console.log(`Klient ${socket.id} (User: ${userId}) sa nemohol pripojiť k hre ${gameIdFromClient}, hra je plná.`);
