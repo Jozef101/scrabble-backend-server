@@ -69,10 +69,24 @@ function applyMoveLetter(gameState, payload, playerIndex) {
     if (!letterToMove) return gameState; // Ak sa písmeno nenašlo, vrátime pôvodný stav
 
     // Umiestnenie písmena na cieľ
-    if (target.type === 'rack') {
-        const firstEmptyIndex = newPlayerRacks[playerIndex].findIndex(l => l === null);
-        if (firstEmptyIndex !== -1) {
-            newPlayerRacks[playerIndex][firstEmptyIndex] = letterToMove;
+     if (target.type === 'rack') {
+        const targetRack = newPlayerRacks[playerIndex];
+        if (targetRack) {
+            // PRIORITA 1: Umiestniť na konkrétny voľný slot, kam hráč ťahal.
+            if (target.index !== undefined && targetRack[target.index] === null) {
+                targetRack[target.index] = letterToMove;
+            }
+            // PRIORITA 2: Vrátiť na pôvodné miesto (pre pravé kliknutie).
+            else if (letterToMove.originalRackIndex !== undefined && targetRack[letterToMove.originalRackIndex] === null) {
+                targetRack[letterToMove.originalRackIndex] = letterToMove;
+            }
+            // PRIORITA 3: Ak všetko ostatné zlyhá, nájsť prvé voľné miesto.
+            else {
+                const firstEmptyIndex = targetRack.findIndex(l => l === null);
+                if (firstEmptyIndex !== -1) {
+                    targetRack[firstEmptyIndex] = letterToMove;
+                }
+            }
         }
     } else if (target.type === 'board') {
         newBoard[target.x][target.y] = { ...letterToMove, originalRackIndex: letterData.originalRackIndex };
@@ -406,7 +420,7 @@ export default function initializeSocket(io, dbAdmin) {
                                 console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z akcie moveLetter:`, e);
                             }
                         }
-                        socket.broadcast.to(gameInstance.gameId).emit('moveLetter', {
+                        io.to(gameInstance.gameId).emit('moveLetter', {
                             ...action.payload,
                             playerIndex: socket.playerIndex
                         });
