@@ -406,7 +406,10 @@ export default function initializeSocket(io, dbAdmin) {
                                 console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z akcie moveLetter:`, e);
                             }
                         }
-                        io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                        socket.broadcast.to(gameInstance.gameId).emit('moveLetter', {
+                            ...action.payload,
+                            playerIndex: socket.playerIndex
+                        });
                     }
                     break;
                 case 'updateGameState':
