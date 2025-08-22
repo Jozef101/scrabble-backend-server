@@ -19,6 +19,80 @@ const countTilesOnBoard = (board) => {
     return count;
 };
 
+/**
+ * Aplikuje presun písmena na daný stav hry.
+ * Toto je server-side verzia logiky, ktorá bola predtým na klientovi.
+ * @param {object} gameState Aktuálny stav hry.
+ * @param {object} payload Dáta z akcie { letterData, source, target }.
+ * @param {number} playerIndex Index hráča, ktorý akciu vykonal.
+ * @returns {object} Nový, upravený stav hry.
+ */
+function applyMoveLetter(gameState, payload, playerIndex) {
+    const { letterData, source, target } = payload;
+
+    let newPlayerRacks = gameState.playerRacks.map(rack => rack ? [...rack] : null);
+    let newBoard = gameState.board.map(row => [...row]);
+    let newExchangeZoneLetters = [...gameState.exchangeZoneLetters];
+
+    // Špeciálny prípad: presun v rámci stojana
+    if (source.type === 'rack' && target.type === 'rack') {
+        const fromIndex = source.index;
+        const toIndex = target.index;
+
+        if (newPlayerRacks[playerIndex][toIndex] === null) {
+            newPlayerRacks[playerIndex][toIndex] = newPlayerRacks[playerIndex][fromIndex];
+            newPlayerRacks[playerIndex][fromIndex] = null;
+        } else {
+            const [movedLetter] = newPlayerRacks[playerIndex].splice(fromIndex, 1);
+            newPlayerRacks[playerIndex].splice(toIndex, 0, movedLetter);
+        }
+        return { ...gameState, playerRacks: newPlayerRacks };
+    }
+
+    // Nájdenie a odstránenie písmena zo zdroja
+    let letterToMove = null;
+    if (source.type === 'board') {
+        letterToMove = { ...newBoard[source.x][source.y] };
+        newBoard[source.x][source.y] = null;
+        if (letterToMove.letter === '') letterToMove.assignedLetter = null;
+    } else if (source.type === 'rack') {
+        letterToMove = { ...letterData };
+        newPlayerRacks[playerIndex][source.index] = null;
+    } else if (source.type === 'exchangeZone') {
+        const index = newExchangeZoneLetters.findIndex(l => l.id === letterData.id);
+        if (index !== -1) {
+            [letterToMove] = newExchangeZoneLetters.splice(index, 1);
+            if (letterToMove.letter === '') letterToMove.assignedLetter = null;
+        }
+    }
+
+    if (!letterToMove) return gameState; // Ak sa písmeno nenašlo, vrátime pôvodný stav
+
+    // Umiestnenie písmena na cieľ
+    if (target.type === 'rack') {
+        const firstEmptyIndex = newPlayerRacks[playerIndex].findIndex(l => l === null);
+        if (firstEmptyIndex !== -1) {
+            newPlayerRacks[playerIndex][firstEmptyIndex] = letterToMove;
+        }
+    } else if (target.type === 'board') {
+        newBoard[target.x][target.y] = { ...letterToMove, originalRackIndex: letterData.originalRackIndex };
+    } else if (target.type === 'exchangeZone') {
+        newExchangeZoneLetters.push(letterToMove);
+    }
+    
+    // Vypočítame pomocné stavy, podobne ako na klientovi
+    const placedLettersCount = newBoard.flat().filter(tile => tile !== null).length - gameState.boardAtStartOfTurn.flat().filter(tile => tile !== null).length;
+
+    return {
+        ...gameState,
+        playerRacks: newPlayerRacks,
+        board: newBoard,
+        exchangeZoneLetters: newExchangeZoneLetters,
+        hasPlacedOnBoardThisTurn: placedLettersCount > 0,
+        hasMovedToExchangeZoneThisTurn: newExchangeZoneLetters.length > 0,
+    };
+}
+
 export default function initializeSocket(io, dbAdmin) {
     io.on('connection', (socket) => {
         console.log(`Nový klient pripojený: ${socket.id}`);
@@ -317,6 +391,24 @@ export default function initializeSocket(io, dbAdmin) {
             console.log(`Akcia od Hráča ${socket.playerIndex + 1} v hre ${gameInstance.gameId}: ${action.type}`);
 
             switch (action.type) {
+                case 'moveLetter':
+                    if (gameInstance.gameState) {
+                        // Aplikujeme zmenu pomocou našej novej funkcie
+                        const newGameState = applyMoveLetter(gameInstance.gameState, action.payload, socket.playerIndex);
+                        gameInstance.gameState = newGameState;
+
+                        // Uložíme nový stav do DB a rozošleme všetkým
+                        if (dbAdmin) {
+                            try {
+                                const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
+                                await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                            } catch (e) {
+                                console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z akcie moveLetter:`, e);
+                            }
+                        }
+                        io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                    }
+                    break;
                 case 'updateGameState':
                     if (gameInstance.gameState) {
                         gameInstance.gameState = { ...gameInstance.gameState, ...action.payload };
