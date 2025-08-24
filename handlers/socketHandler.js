@@ -587,6 +587,53 @@ export default function initializeSocket(io, dbAdmin) {
                         io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
                     }
                     break;
+                case 'surrender':
+                    if (gameInstance.gameState && !gameInstance.gameState.isGameOver) {
+                        const { surrenderingPlayerIndex } = action.payload;
+                        const loserIndex = surrenderingPlayerIndex;
+                        const winnerIndex = loserIndex === 0 ? 1 : 0;
+
+                        const loser = gameInstance.players.find(p => p.playerIndex === loserIndex);
+                        const winner = gameInstance.players.find(p => p.playerIndex === winnerIndex);
+
+                        if (!loser || !winner) {
+                            console.error(`Chyba pri vzdávaní hry ${gameInstance.gameId}: Nenašiel sa víťaz alebo porazený.`);
+                            return;
+                        }
+
+                        // Aktualizujeme ELO hodnotenia
+                        await updateEloRatings(winner.userId, loser.userId);
+
+                        // Pripravíme finálny stav hry
+                        const finalGameState = {
+                            ...gameInstance.gameState,
+                            isGameOver: true,
+                            winnerIndex: winnerIndex, // Uložíme index víťaza
+                            // Môžeme pridať aj dôvod ukončenia pre zobrazenie na UI
+                            gameOverReason: `${loser.nickname} sa vzdal(a).` 
+                        };
+                        gameInstance.gameState = finalGameState;
+
+                        // Aktualizujeme hlavný dokument hry vo Firestore
+                        if (dbAdmin) {
+                            try {
+                                const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                                await gameDocRef.set({
+                                    status: 'finished',
+                                    endedAt: new Date(),
+                                    winnerId: winner.userId,
+                                    loserId: loser.userId,
+                                    gameOverReason: 'surrender'
+                                }, { merge: true });
+                            } catch (e) {
+                                console.error(`Chyba pri aktualizácii stavu hry ${gameInstance.gameId} na 'finished' po vzdaní sa:`, e);
+                            }
+                        }
+
+                        // Odošleme finálny stav hry všetkým v miestnosti
+                        io.to(gameInstance.gameId).emit('gameStateUpdate', finalGameState);
+                    }
+                    break;
                 case 'gameOver':
                     if (!action.payload || !action.payload.winnerId || !action.payload.loserId) {
                      console.error('Neplatné dáta pre akciu gameOver:', action.payload);
