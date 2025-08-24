@@ -371,10 +371,10 @@ export default function initializeSocket(io, dbAdmin) {
                             const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient);
                             await gameDocRef.set({
                                 status: 'in-progress',
-                                currentPlayerIndex: gameInstance.gameState.currentPlayerIndex,
-                                progress: 0,
+                                currentPlayerIndex: gameInstance.gameState?.currentPlayerIndex ?? 0,
                                 players: playersWithElo // Uložíme hráčov aj s ich "zmrazeným" ELO
                             }, { merge: true });
+
 
                         } catch (e) {
                             console.error(`Chyba pri ukladaní počiatočného stavu hry ${gameIdFromClient} do Firestore po pripojení druhého hráča:`, e);
@@ -471,6 +471,7 @@ export default function initializeSocket(io, dbAdmin) {
                                         id: p.userId,
                                         nickname: p.nickname,
                                         playerIndex: p.playerIndex,
+                                        elo: p.elo,
                                         score: gameInstance.gameState.playerScores ? gameInstance.gameState.playerScores[p.playerIndex] : 0
                                     })),
                                     scores: gameInstance.gameState.playerScores || [0, 0]
