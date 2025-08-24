@@ -358,24 +358,28 @@ export default function initializeSocket(io, dbAdmin) {
 
                     if (dbAdmin) {
                         try {
+                            // Vytvoríme pole hráčov s ich aktuálnym ELO, ktoré sa uloží do dokumentu hry
+                            const playersWithElo = gameInstance.players
+                                .filter(p => p !== null)
+                                .map(p => ({
+                                    id: p.userId,
+                                    nickname: p.nickname,
+                                    playerIndex: p.playerIndex,
+                                    elo: p.elo // Pridáme ELO hráča v momente štartu
+                                }));
+
                             const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient);
                             await gameDocRef.set({
                                 status: 'in-progress',
                                 currentPlayerIndex: gameInstance.gameState.currentPlayerIndex,
-                                progress: 0, // Na začiatku je progres 0
-                                players: gameInstance.players
-                                    .filter(p => p !== null)
-                                    .map(p => ({
-                                        id: p.userId,
-                                        nickname: p.nickname,
-                                        playerIndex: p.playerIndex
-                                    }))
+                                progress: 0,
+                                players: playersWithElo // Uložíme hráčov aj s ich "zmrazeným" ELO
                             }, { merge: true });
+
                         } catch (e) {
                             console.error(`Chyba pri ukladaní počiatočného stavu hry ${gameIdFromClient} do Firestore po pripojení druhého hráča:`, e);
                         }
                     }
-
                 }
             } else {
                 console.error(`Server: Kritická chyba: GameState pre hru ${gameIdFromClient} je stále null po všetkých pokusoch o inicializáciu.`);
