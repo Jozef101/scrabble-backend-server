@@ -10,7 +10,7 @@ const countTilesOnBoard = (board) => {
         for (const row of board) {
             for (const tile of row) {
                 // Počítame len políčka, ktoré majú pridelené písmeno
-                if (tile && tile.letter && tile.letter !== '') {
+                if (tile != null) {
                     count++;
                 }
             }
@@ -147,6 +147,7 @@ export default function initializeSocket(io, dbAdmin) {
                                         userId: playerFromDb.id,
                                         nickname: playerFromDb.nickname,
                                         playerIndex: playerFromDb.playerIndex,
+                                        elo: playerFromDb.elo,
                                         socketId: null // Dôležité: socketId zatiaľ nie je známe
                                     };
                                 }
@@ -441,17 +442,29 @@ export default function initializeSocket(io, dbAdmin) {
                         if (gameInstance.gameState && !gameInstance.gameState.isGameOver && action.payload && action.payload.isGameOver) {
                             console.log(`Hra ${gameInstance.gameId} skončila. Začínam výpočet ELO.`);
                             
-                            const player1 = gameInstance.players.find(p => p.playerIndex === 0);
-                            const player2 = gameInstance.players.find(p => p.playerIndex === 1);
-                            const player1Score = action.payload.playerScores[0];
-                            const player2Score = action.payload.playerScores[1];
+                            try {
+                                const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                                const gameDoc = await gameDocRef.get();
+                                if (gameDoc.exists && gameDoc.data().gameMode === 'competitive') {
+                                    console.log(`Hra ${gameInstance.gameId} je kompetitívna. Pokračujem výpočtom ELO.`);
 
-                            if (player1Score > player2Score) {
-                                await updateEloRatings(player1.userId, player2.userId);
-                            } else if (player2Score > player1Score) {
-                                await updateEloRatings(player2.userId, player1.userId);
-                            } else {
-                                console.log(`Hra ${gameInstance.gameId} skončila remízou. ELO skóre sa nemení.`);
+                                    const player1 = gameInstance.players.find(p => p.playerIndex === 0);
+                                    const player2 = gameInstance.players.find(p => p.playerIndex === 1);
+                                    const player1Score = action.payload.playerScores[0];
+                                    const player2Score = action.payload.playerScores[1];
+
+                                    if (player1Score > player2Score) {
+                                        await updateEloRatings(player1.userId, player2.userId);
+                                    } else if (player2Score > player1Score) {
+                                        await updateEloRatings(player2.userId, player1.userId);
+                                    } else {
+                                        console.log(`Hra ${gameInstance.gameId} skončila remízou. ELO skóre sa nemení.`);
+                                    }
+                                } else {
+                                    console.log(`Hra ${gameInstance.gameId} je priateľská alebo sa nepodarilo načítať typ hry. ELO sa nemení.`);
+                                }
+                            } catch (e) {
+                                console.error(`Chyba pri kontrole typu hry ${gameInstance.gameId} pre výpočet ELO:`, e);
                             }
                         }
 
@@ -603,7 +616,18 @@ export default function initializeSocket(io, dbAdmin) {
                         }
 
                         // Aktualizujeme ELO hodnotenia
-                        await updateEloRatings(winner.userId, loser.userId);
+                        try {
+                            const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                            const gameDoc = await gameDocRef.get();
+                            if (gameDoc.exists && gameDoc.data().gameMode === 'competitive') {
+                                console.log(`Hra ${gameInstance.gameId} je kompetitívna. Aktualizujem ELO po vzdaní sa.`);
+                                await updateEloRatings(winner.userId, loser.userId);
+                            } else {
+                                console.log(`Hra ${gameInstance.gameId} je priateľská. ELO sa po vzdaní sa nemení.`);
+                            }
+                        } catch (e) {
+                            console.error(`Chyba pri kontrole typu hry ${gameInstance.gameId} pre výpočet ELO po vzdaní sa:`, e);
+                        }
 
                         // Pripravíme finálny stav hry
                         const finalGameState = {
