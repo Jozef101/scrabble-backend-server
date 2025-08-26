@@ -1,5 +1,6 @@
 //backend/handlers/socketHandler.js
 import { games, gameTimeouts, createNewGameInstance, generateInitialGameState, updateEloRatings } from '../game/gameManager.js';
+import { drawLetters } from '../utils/gameUtils.js';
 import { INACTIVITY_TIMEOUT_MS } from '../config/constants.js';
 import { resetGameInstance } from '../game/gameManager.js';
 
@@ -411,6 +412,8 @@ export default function initializeSocket(io, dbAdmin) {
                 action.type !== 'assignJoker' &&
                 action.type !== 'chatMessage' &&
                 action.type !== 'turnSubmitted' &&
+                action.type !== 'drawForTurn' &&
+                action.type !== 'playerLeftGame' &&
                 (gameInstance.gameState.currentPlayerIndex !== socket.playerIndex)) {
                 socket.emit('gameError', 'Nie je váš ťah!');
                 console.warn(`Hráč ${socket.playerIndex + 1} sa pokúsil o akciu ${action.type}, ale nie je na ťahu v hre ${gameInstance.gameId}.`);
@@ -420,6 +423,122 @@ export default function initializeSocket(io, dbAdmin) {
             console.log(`Akcia od Hráča ${socket.playerIndex + 1} v hre ${gameInstance.gameId}: ${action.type}`);
 
             switch (action.type) {
+                case 'drawForTurn': {
+                    // --- KROK 1: NOVÁ VALIDÁCIA ---
+                    // Skontrolujeme, či sú v hre obaja hráči (či nie sú ich sloty null)
+                    if (!gameInstance.players[0] || !gameInstance.players[1]) {
+                        return socket.emit('gameError', 'Losovať je možné až po pripojení oboch hráčov do hry.');
+                    }
+
+                    // Pôvodná validácia (zostáva)
+                    if (gameInstance.gameState.gameStatus !== 'drawing_for_turn') {
+                        return socket.emit('gameError', 'Hra nie je vo fáze losovania.');
+                    }
+                    if (gameInstance.gameState.turnDraw[socket.playerIndex] !== null) {
+                        return socket.emit('gameError', 'Už si si vylosoval písmeno.');
+                    }
+
+                    // --- KROK 2: Hráč si potiahne písmeno (zostáva rovnaké) ---
+                    const { drawnLetters, remainingBag } = drawLetters(gameInstance.gameState.letterBag, 1);
+                    if (drawnLetters.length === 0) {
+                        return socket.emit('gameError', 'Vo vrecúšku nie sú žiadne písmená na losovanie.');
+                    }
+                    const drawnLetter = drawnLetters[0];
+
+                    gameInstance.gameState.turnDraw[socket.playerIndex] = drawnLetter;
+                    gameInstance.gameState.letterBag = remainingBag;
+
+                    // --- KROK 3: ULOŽENIE STAVU A ROZHODNUTIE, ČO ĎALEJ ---
+
+                    // Najprv vždy uložíme aktuálny stav po losovaní do DB
+                    if (dbAdmin) {
+                        try {
+                            const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
+                            await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                        } catch (e) {
+                            console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} po losovaní:`, e);
+                        }
+                    }
+
+                    const { turnDraw } = gameInstance.gameState;
+
+                    // Ak ešte nelosoval druhý hráč, len pošleme update a čakáme.
+                    if (!turnDraw[0] || !turnDraw[1]) {
+                        io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                        break; 
+                    }
+
+                    // Ak sme tu, znamená to, že si práve potiahol druhý hráč. Nasleduje vyhodnotenie.
+                    const letter1 = turnDraw[0].letter;
+                    const letter2 = turnDraw[1].letter;
+                    let startingPlayerIndex = null;
+
+                    if (letter1 === '' && letter2 !== '') startingPlayerIndex = 1;
+                    else if (letter2 === '' && letter1 !== '') startingPlayerIndex = 0;
+                    else if (letter1 < letter2) startingPlayerIndex = 0;
+                    else if (letter2 < letter1) startingPlayerIndex = 1;
+
+                    if (startingPlayerIndex !== null) {
+                        // VÍŤAZ LOSOVANIA
+                        gameInstance.gameState.gameStatus = 'turn_draw_reveal';
+                        gameInstance.gameState.turnDrawWinner = startingPlayerIndex;
+                        io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState); // Pošleme výsledok
+
+                        setTimeout(async () => {
+                            try {
+                                const logEntry = {
+                                    actionType: 'draw_result',
+                                    turnNumber: 0, // Špeciálne číslo ťahu pre losovanie
+                                    drawnLetters: { // Uložíme obe písmená pre zobrazenie
+                                        0: turnDraw[0],
+                                        1: turnDraw[1]
+                                    },
+                                    winnerIndex: startingPlayerIndex,
+                                    timestamp: Date.now()
+                                };
+
+                                const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
+                                await turnLogCollectionRef.add(logEntry);
+                            } catch (e) {
+                                console.error("Chyba pri ukladaní záznamu o losovaní:", e);
+                            }
+                            let finalBag = [...gameInstance.gameState.letterBag, turnDraw[0], turnDraw[1]];
+                            for (let i = finalBag.length - 1; i > 0; i--) {
+                                const j = Math.floor(Math.random() * (i + 1));
+                                [finalBag[i], finalBag[j]] = [finalBag[j], finalBag[i]];
+                            }
+
+                            gameInstance.gameState.letterBag = finalBag;
+                            gameInstance.gameState.currentPlayerIndex = startingPlayerIndex;
+                            gameInstance.gameState.gameStatus = 'in_progress';
+                            gameInstance.gameState.turnDraw = { 0: null, 1: null };
+                            gameInstance.gameState.turnDrawWinner = null;
+
+                            if (dbAdmin) {
+                                const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
+                                await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                            }
+                            io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState); // Spustíme hru
+                        }, 4000);
+
+                    } else {
+                        // REMÍZA
+                        let finalBag = [...gameInstance.gameState.letterBag, turnDraw[0], turnDraw[1]];
+                        for (let i = finalBag.length - 1; i > 0; i--) {
+                            const j = Math.floor(Math.random() * (i + 1));
+                            [finalBag[i], finalBag[j]] = [finalBag[j], finalBag[i]];
+                        }
+                        gameInstance.gameState.letterBag = finalBag;
+                        gameInstance.gameState.turnDraw = { 0: null, 1: null }; 
+
+                        if (dbAdmin) {
+                            const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
+                            await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                        }
+                        io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                    }
+                    break;
+                }
                 case 'moveLetter':
                     if (gameInstance.gameState) {
                         // Aplikujeme zmenu pomocou našej novej funkcie
