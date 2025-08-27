@@ -3,6 +3,80 @@ import { games, gameTimeouts, createNewGameInstance, generateInitialGameState, u
 import { drawLetters } from '../utils/gameUtils.js';
 import { INACTIVITY_TIMEOUT_MS } from '../config/constants.js';
 import { resetGameInstance } from '../game/gameManager.js';
+import { LETTER_VALUES } from '../config/constants.js';
+
+/**
+ * Vypočíta finálne skóre, vytvorí záznam o konci hry a uloží ho do DB.
+ * @param {object} gameInstance - Aktuálna inštancia hry.
+ * @param {object} dbAdmin - Inštancia Firestore admin.
+ * @param {object} details - Objekt s detailmi o konci hry { reason, winnerIndex, loserIndex, finishingPlayerIndex }.
+ */
+async function calculateAndLogFinalScores(gameInstance, dbAdmin, details) {
+    const { reason, winnerIndex, finishingPlayerIndex } = details;
+    const initialScores = [...gameInstance.gameState.playerScores];
+    const finalRacks = gameInstance.gameState.playerRacks;
+
+    let deductions = { 0: 0, 1: 0 };
+    let bonus = 0;
+    let finalScores = [...initialScores];
+    let calculatedWinnerIndex = winnerIndex; // Predvolený víťaz (napr. pri vzdaní sa)
+
+    // Výpočet skóre sa robí len pri štandardnom konci alebo po pasovaní
+    if (reason === 'standard_end' || reason === 'pass_end') {
+        // Vypočítame odpočítané body pre každého hráča
+        finalRacks.forEach((rack, index) => {
+            if (rack) {
+                rack.forEach(letter => {
+                    if (letter) deductions[index] += LETTER_VALUES[letter.letter] || 0;
+                });
+            }
+        });
+
+        // Ak hru niekto ukončil minutím všetkých písmen, pripočítame mu body súpera
+        if (finishingPlayerIndex !== null && finishingPlayerIndex !== undefined) {
+            const opponentIndex = 1 - finishingPlayerIndex;
+            bonus = deductions[opponentIndex];
+            finalScores[finishingPlayerIndex] += bonus;
+        }
+
+        // Odpočítame body obom hráčom z ich skóre
+        finalScores[0] -= deductions[0];
+        finalScores[1] -= deductions[1];
+
+        // Určíme víťaza na základe finálneho skóre
+        if (finalScores[0] > finalScores[1]) {
+            calculatedWinnerIndex = 0;
+        } else if (finalScores[1] > finalScores[0]) {
+            calculatedWinnerIndex = 1;
+        } else {
+            calculatedWinnerIndex = null; // Remíza
+        }
+    }
+
+    // DÔLEŽITÉ: Aktualizujeme gameState finálnym skóre
+    gameInstance.gameState.playerScores = finalScores;
+    gameInstance.gameState.winnerIndex = calculatedWinnerIndex;
+
+    // Vytvoríme finálny záznam do denníka
+    const logEntry = {
+        actionType: 'game_over',
+        reason: reason,
+        initialScores,
+        finalScores,
+        deductions,
+        bonus,
+        winnerIndex: calculatedWinnerIndex,
+        finishingPlayerIndex: finishingPlayerIndex,
+        timestamp: Date.now()
+    };
+
+    try {
+        const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
+        await turnLogCollectionRef.add(logEntry);
+    } catch (e) {
+        console.error("Chyba pri ukladaní záznamu 'game_over':", e);
+    }
+}
 
 // NOVÁ FUNKCIA: Počíta, koľko políčok na doske obsahuje písmeno
 const countTilesOnBoard = (board) => {
@@ -568,33 +642,44 @@ export default function initializeSocket(io, dbAdmin) {
                         const tilesOnBoardCount = countTilesOnBoard(gameInstance.gameState.board);
                         
                         // Skontrolujeme, či hra práve skončila
-                        if (gameInstance.gameState && !gameInstance.gameState.isGameOver && action.payload && action.payload.isGameOver) {
-                            console.log(`Hra ${gameInstance.gameId} skončila. Začínam výpočet ELO.`);
-                            
+                        if (!gameInstance.gameState.isGameOver && action.payload && action.payload.isGameOver) {
+                            console.log(`Hra ${gameInstance.gameId} skončila. Vypočítavam finálne skóre a vytváram záznam.`);
+
+                            // Zistíme, či hru niekto ukončil minutím všetkých písmen.
+                            // Pozeráme sa na stav rackov, ktorý nám poslal klient v payloade.
+                            const finishingPlayerIndex = action.payload.playerRacks[action.payload.currentPlayerIndex].every(l => l === null) 
+                                ? action.payload.currentPlayerIndex 
+                                : null;
+
+                            // Zavoláme našu novú funkciu na výpočet a zalogovanie.
+                            // Ona sa už postará o výpočet skóre, uloženie logu a aktualizáciu gameState.
+                            await calculateAndLogFinalScores(gameInstance, dbAdmin, {
+                                reason: action.payload.consecutivePasses >= 4 ? 'pass_end' : 'standard_end',
+                                finishingPlayerIndex: finishingPlayerIndex
+                            });
+
+                            // AŽ PO VÝPOČTE FINÁLNEHO SKÓRE RIEŠIME ELO.
                             try {
-                            const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
-                            const gameDoc = await gameDocRef.get();
-                            if (gameDoc.exists && gameDoc.data().gameMode === 'competitive') {
-                                console.log(`Hra ${gameInstance.gameId} je kompetitívna. Pokračujem výpočtom ELO.`);
+                                const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                                const gameDoc = await gameDocRef.get();
+                                if (gameDoc.exists && gameDoc.data().gameMode === 'competitive') {
 
-                                const player1 = gameInstance.players.find(p => p.playerIndex === 0);
-                                const player2 = gameInstance.players.find(p => p.playerIndex === 1);
-                                const player1Score = action.payload.playerScores[0];
-                                const player2Score = action.payload.playerScores[1];
+                                    // Použijeme finálne skóre, ktoré vypočítal a uložil náš server
+                                    const finalScores = gameInstance.gameState.playerScores;
+                                    const player1 = gameInstance.players.find(p => p && p.playerIndex === 0);
+                                    const player2 = gameInstance.players.find(p => p && p.playerIndex === 1);
 
-                                if (player1Score > player2Score) {
-                                    await updateEloRatings(player1.userId, player2.userId);
-                                } else if (player2Score > player1Score) {
-                                    await updateEloRatings(player2.userId, player1.userId);
-                                } else {
-                                    console.log(`Hra ${gameInstance.gameId} skončila remízou. ELO skóre sa nemení.`);
+                                    if (player1 && player2) { // Ochrana pre prípad, že by hráč neexistoval
+                                        if (finalScores[0] > finalScores[1]) {
+                                            await updateEloRatings(player1.userId, player2.userId);
+                                        } else if (finalScores[1] > finalScores[0]) {
+                                            await updateEloRatings(player2.userId, player1.userId);
+                                        }
+                                    }
                                 }
-                            } else {
-                                console.log(`Hra ${gameInstance.gameId} je priateľská alebo sa nepodarilo načítať typ hry. ELO sa nemení.`);
+                            } catch (e) {
+                                console.error(`Chyba pri aktualizácii ELO pre hru ${gameInstance.gameId}:`, e);
                             }
-                        } catch (e) {
-                            console.error(`Chyba pri kontrole typu hry ${gameInstance.gameId} pre výpočet ELO:`, e);
-                        }
                         }
 
                         if (dbAdmin) {
@@ -744,6 +829,12 @@ export default function initializeSocket(io, dbAdmin) {
                             return;
                         }
 
+                        await calculateAndLogFinalScores(gameInstance, dbAdmin, { 
+                            reason: 'surrender', 
+                            winnerIndex: winner.playerIndex,
+                            loserIndex: loser.playerIndex 
+                        });
+
                         // Aktualizujeme ELO hodnotenia
                         try {
                             const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
@@ -759,14 +850,8 @@ export default function initializeSocket(io, dbAdmin) {
                         }
 
                         // Pripravíme finálny stav hry
-                        const finalGameState = {
-                            ...gameInstance.gameState,
-                            isGameOver: true,
-                            winnerIndex: winnerIndex, // Uložíme index víťaza
-                            // Môžeme pridať aj dôvod ukončenia pre zobrazenie na UI
-                            gameOverReason: `${loser.nickname} sa vzdal(a).` 
-                        };
-                        gameInstance.gameState = finalGameState;
+                        gameInstance.gameState.isGameOver = true;
+                        gameInstance.gameState.gameOverReason = `${loser.nickname} sa vzdal(a).`;
 
                         // Aktualizujeme hlavný dokument hry vo Firestore
                         if (dbAdmin) {
@@ -785,27 +870,63 @@ export default function initializeSocket(io, dbAdmin) {
                         }
 
                         // Odošleme finálny stav hry všetkým v miestnosti
-                        io.to(gameInstance.gameId).emit('gameStateUpdate', finalGameState);
+                        io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
                     }
                     break;
-                case 'gameOver':
-                    if (!action.payload || !action.payload.winnerId || !action.payload.loserId) {
-                     console.error('Neplatné dáta pre akciu gameOver:', action.payload);
-                     return;
-                     }
-                     console.log(`Hra ${gameInstance.gameId} skončila. Aktualizujem ELO pre víťaza ${action.payload.winnerId} a porazeného ${action.payload.loserId}.`);
-                     await updateEloRatings(action.payload.winnerId, action.payload.loserId);
-                     
-                     if (dbAdmin) {
+                case 'gameOver': { // Použijeme { } pre lepší scope
+                    // Deštrukturujeme si všetky dáta, ktoré nám poslal klient
+                    const { winnerId, loserId, initialScores, finalScores, deductions, bonus, finishingPlayerIndex, reason, winnerIndex } = action.payload;
+
+                    // 1. Vytvoríme finálny záznam do denníka
+                    const logEntry = {
+                        actionType: 'game_over',
+                        reason: reason,
+                        initialScores: initialScores,
+                        finalScores: finalScores,
+                        deductions: deductions,
+                        bonus: bonus,
+                        winnerIndex: winnerIndex,
+                        finishingPlayerIndex: finishingPlayerIndex,
+                        timestamp: Date.now()
+                    };
+                    try {
+                        const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
+                        await turnLogCollectionRef.add(logEntry);
+                    } catch (e) {
+                        console.error("Chyba pri ukladaní záznamu 'game_over':", e);
+                    }
+
+                    // 2. Aktualizujeme ELO (logika, ktorú už máte, len je teraz bezpečnejšia)
+                    if (winnerId && loserId) {
                         try {
                             const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
-                            await gameDocRef.set({ status: 'finished', endedAt: new Date() }, { merge: true });
+                            const gameDoc = await gameDocRef.get();
+                            if (gameDoc.exists && gameDoc.data().gameMode === 'competitive') {
+                                await updateEloRatings(winnerId, loserId);
+                            }
                         } catch (e) {
-                            console.error(`Chyba pri aktualizácii stavu hry ${gameInstance.gameId} na 'finished':`, e);
+                            console.error(`Chyba pri aktualizácii ELO pre hru ${gameInstance.gameId}:`, e);
                         }
                     }
-                     
-                     break;
+
+                    // 3. Aktualizujeme finálny stav hry v pamäti a v databáze
+                    gameInstance.gameState.isGameOver = true;
+                    gameInstance.gameState.playerScores = finalScores;
+                    gameInstance.gameState.winnerIndex = winnerIndex;
+
+                    if (dbAdmin) {
+                        const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                        await gameDocRef.update({ 
+                            status: 'finished', 
+                            endedAt: new Date(),
+                            scores: finalScores 
+                        });
+                    }
+
+                    // 4. Pošleme finálny stav všetkým klientom
+                    io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                    break;
+                }
                 default:
                     console.warn(`Neznámy typ akcie: ${action.type}`);
                     break;
