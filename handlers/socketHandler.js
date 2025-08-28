@@ -549,8 +549,8 @@ export default function initializeSocket(io, dbAdmin) {
 
                     if (letter1 === '' && letter2 !== '') startingPlayerIndex = 1;
                     else if (letter2 === '' && letter1 !== '') startingPlayerIndex = 0;
-                    else if (letter1 < letter2) startingPlayerIndex = 0;
-                    else if (letter2 < letter1) startingPlayerIndex = 1;
+                    else if (letter1.localeCompare(letter2, 'sk') < 0) startingPlayerIndex = 0;
+                    else if (letter1.localeCompare(letter2, 'sk') > 0) startingPlayerIndex = 1;
 
                     if (startingPlayerIndex !== null) {
                         // VÍŤAZ LOSOVANIA
