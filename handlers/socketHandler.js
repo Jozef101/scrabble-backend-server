@@ -12,7 +12,7 @@ import { LETTER_VALUES } from '../config/constants.js';
  * @param {object} details - Objekt s detailmi o konci hry { reason, winnerIndex, loserIndex, finishingPlayerIndex }.
  */
 async function calculateAndLogFinalScores(gameInstance, dbAdmin, details) {
-    const { reason, winnerIndex, finishingPlayerIndex } = details;
+    const { reason, winnerIndex, finishingPlayerIndex = null } = details;
     const initialScores = [...gameInstance.gameState.playerScores];
     const finalRacks = gameInstance.gameState.playerRacks;
 
