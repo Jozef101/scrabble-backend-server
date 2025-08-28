@@ -654,7 +654,7 @@ export default function initializeSocket(io, dbAdmin) {
                             // Zavoláme našu novú funkciu na výpočet a zalogovanie.
                             // Ona sa už postará o výpočet skóre, uloženie logu a aktualizáciu gameState.
                             await calculateAndLogFinalScores(gameInstance, dbAdmin, {
-                                reason: action.payload.consecutivePasses >= 4 ? 'pass_end' : 'standard_end',
+                                reason: action.payload.consecutivePasses >= 6 ? 'pass_end' : 'standard_end',
                                 finishingPlayerIndex: finishingPlayerIndex
                             });
 
