@@ -61,7 +61,6 @@ function calculateNewElo(winner, loser) {
     if (winner.gamesPlayed < 51 && ratingChangeWinner > 5) {
         const accelerationPoints = ratingChangeWinner - 5;
         ratingChangeWinner += accelerationPoints;
-        console.log(`Hráč ${winner.userId} získal ${accelerationPoints} akceleračných bodov.`);
     }
 
     const newWinnerElo = winner.elo + ratingChangeWinner;
@@ -116,9 +115,6 @@ export async function updateEloRatings(winnerId, loserId) {
 
         await batch.commit();
 
-        console.log(`ELO hodnotenia aktualizované:
-        Víťaz ${winnerId}: ${winnerData.elo} -> ${newWinnerElo}
-        Porazený ${loserId}: ${loserData.elo} -> ${newLoserElo}`);
     } catch (e) {
         console.error('Chyba pri aktualizácii ELO hodnotení:', e);
     }
