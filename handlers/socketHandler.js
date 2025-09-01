@@ -438,9 +438,9 @@ export default function initializeSocket(io, dbAdmin) {
 
                 if (connectedPlayersCount < 2) {
                     io.to(gameInstance.gameId).emit('waitingForPlayers', 'Čaká sa na druhého hráča...');
-                    console.log(`Server: Hra ${gameIdFromClient}: Čaká sa na druhého hráča. Aktuálni pripojení hráči: ${connectedPlayersCount}`);
+                    // console.log(`Server: Hra ${gameIdFromClient}: Čaká sa na druhého hráča. Aktuálni pripojení hráči: ${connectedPlayersCount}`);
                 } else {
-                    console.log(`Server: Hra ${gameIdFromClient}: Všetci hráči pripojení. Hra môže začať.`);
+                    // console.log(`Server: Hra ${gameIdFromClient}: Všetci hráči pripojení. Hra môže začať.`);
 
                     if (dbAdmin) {
                         try {
