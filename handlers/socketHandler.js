@@ -488,6 +488,7 @@ export default function initializeSocket(io, dbAdmin) {
                 action.type !== 'turnSubmitted' &&
                 action.type !== 'drawForTurn' &&
                 action.type !== 'playerLeftGame' &&
+                action.type !== 'resolveTurnValidation' &&
                 (gameInstance.gameState.currentPlayerIndex !== socket.playerIndex)) {
                 socket.emit('gameError', 'Nie je váš ťah!');
                 console.warn(`Hráč ${socket.playerIndex + 1} sa pokúsil o akciu ${action.type}, ale nie je na ťahu v hre ${gameInstance.gameId}.`);
@@ -634,6 +635,112 @@ export default function initializeSocket(io, dbAdmin) {
                         });
                     }
                     break;
+                case 'submitTurnForApproval': {
+                    if (gameInstance.gameState) {
+                        // Získame všetky dáta z payloadu
+                        const { placedLetters, unverifiedWords, turnScore, allFormedWords } = action.payload;
+
+                        // Nastavíme nový stav hry
+                        gameInstance.gameState.gameStatus = 'AWAITING_WORD_VALIDATION';
+                        
+                        // Uložíme si všetky informácie o ťahu
+                        gameInstance.gameState.pendingTurn = {
+                            playerIndex: socket.playerIndex,
+                            placedLetters: placedLetters,
+                            unverifiedWords: unverifiedWords,
+                            turnScore: turnScore, // Uložíme aj skóre
+                            allFormedWords: allFormedWords // Uložíme aj slová
+                        };
+
+                        // Uložíme zmenený stav hry do DB
+                        if (dbAdmin) {
+                            try {
+                                const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
+                                await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                            } catch (e) {
+                                console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} pri čakaní na schválenie:`, e);
+                            }
+                        }
+                        
+                        // Rozošleme všetkým hráčom nový stav
+                        io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                    }
+                    break;
+                }
+case 'resolveTurnValidation': {
+                    const { approved } = action.payload;
+                    const { gameState } = gameInstance;
+                    const { pendingTurn } = gameState;
+
+                    // --- Validácia ---
+                    if (gameState.gameStatus !== 'AWAITING_WORD_VALIDATION' || !pendingTurn) {
+                        return socket.emit('gameError', 'Hra nie je v stave čakania na schválenie.');
+                    }
+                    const opponentIndex = 1 - pendingTurn.playerIndex;
+                    if (socket.playerIndex !== opponentIndex) {
+                        return socket.emit('gameError', 'Iba súper môže schváliť alebo zamietnuť ťah.');
+                    }
+                    // --- Koniec validácie ---
+
+                    if (approved) {
+                        // --- ŤAH SCHVÁLENÝ ---
+                        const { playerIndex, placedLetters, turnScore, allFormedWords } = pendingTurn;
+                        
+                        gameState.playerScores[playerIndex] += turnScore;
+
+                        // Vytvoríme a uložíme záznam o ťahu - TÝMTO OPRAVÍME BUG
+                        const turnDetails = {
+                            actionType: 'placeLetters',
+                            playerIndex: playerIndex,
+                            placedLetters: placedLetters,
+                            newWords: allFormedWords,
+                            score: turnScore,
+                            timestamp: Date.now(),
+                        };
+                        try {
+                            const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
+                            await turnLogCollectionRef.add(turnDetails);
+                        } catch (e) {
+                            console.error(`Chyba pri ukladaní schváleného ťahu do logu:`, e);
+                        }
+                        
+                        const numToDraw = placedLetters.length;
+                        const { drawnLetters, remainingBag, bagEmpty } = drawLetters(gameState.letterBag, numToDraw);
+                        
+                        let currentRack = gameState.playerRacks[playerIndex].filter(l => l !== null && !placedLetters.some(p => p.letterData.id === l.id));
+                        let newRack = [...currentRack, ...drawnLetters];
+                        while (newRack.length < 7) { newRack.push(null); }
+                        gameState.playerRacks[playerIndex] = newRack;
+
+                        gameState.letterBag = remainingBag;
+                        gameState.isBagEmpty = bagEmpty;
+                        gameState.boardAtStartOfTurn = gameState.board.map(row => [...row]);
+                        gameState.currentPlayerIndex = opponentIndex;
+                        gameState.consecutivePasses = 0;
+                        
+                    } else {
+                        // --- ŤAH ZAMIETNUTÝ ---
+                        const { playerIndex } = pendingTurn;
+                        gameState.currentPlayerIndex = playerIndex;
+                    }
+
+                    // Vyčistíme dočasné dáta a vrátime hru do normálu
+                    gameState.gameStatus = 'in_progress';
+                    delete gameState.pendingTurn;
+                    
+                    if (dbAdmin) {
+                        try {
+                            const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
+                            await gameStateDocRef.set({ gameState: JSON.stringify(gameState) }, { merge: true });
+                        } catch (e) {
+                            console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} po vyriešení ťahu:`, e);
+                        }
+                    }
+
+                    io.to(gameInstance.gameId).emit('gameStateUpdate', gameState);
+                    
+                    break;
+                }
                 case 'updateGameState':
                     if (gameInstance.gameState) {
                         gameInstance.gameState = { ...gameInstance.gameState, ...action.payload };
