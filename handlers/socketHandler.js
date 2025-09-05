@@ -667,7 +667,7 @@ export default function initializeSocket(io, dbAdmin) {
                     }
                     break;
                 }
-case 'resolveTurnValidation': {
+                case 'resolveTurnValidation': {
                     const { approved } = action.payload;
                     const { gameState } = gameInstance;
                     const { pendingTurn } = gameState;
@@ -682,87 +682,89 @@ case 'resolveTurnValidation': {
                     }
                     
                     if (approved) {
-                        // --- ŤAH SCHVÁLENÝ ---
-                        const { playerIndex, placedLetters, turnScore, allFormedWords } = pendingTurn;
-                        
-                        gameState.playerScores[playerIndex] += turnScore;
-                        gameState.isFirstTurn = false;
-                        
-                        const turnDetails = {
-                            actionType: 'placeLetters',
-                            playerIndex: playerIndex,
-                            placedLetters: placedLetters,
-                            newWords: allFormedWords,
-                            score: turnScore,
-                            timestamp: Date.now(),
-                        };
-                        try {
-                            const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
-                            await turnLogCollectionRef.add(turnDetails);
-                        } catch (e) {
-                            console.error(`Chyba pri ukladaní schváleného ťahu do logu:`, e);
-                        }
-                        
-                        const numToDraw = placedLetters.length;
-                        const { drawnLetters, remainingBag, bagEmpty } = drawLetters(gameState.letterBag, numToDraw);
-                        
-                        let currentRack = gameState.playerRacks[playerIndex].filter(l => l !== null && !placedLetters.some(p => p.letterData.id === l.id));
-                        let newRack = [...currentRack, ...drawnLetters];
-
-                        // --- NOVÁ KONTROLA KONCA HRY ---
-                        if (bagEmpty && newRack.length === 0) {
-                            // HRA SKONČILA
-                            gameState.playerRacks[playerIndex] = newRack.map(() => null);
-                            gameState.letterBag = remainingBag;
-                            gameState.isBagEmpty = true;
-                            gameState.isGameOver = true;
-
-                            await calculateAndLogFinalScores(gameInstance, dbAdmin, {
-                                reason: 'standard_end',
-                                finishingPlayerIndex: playerIndex
-                            });
-                            
-                            const winner = gameInstance.players.find(p => p && p.playerIndex === gameState.winnerIndex);
-                            const loser = gameInstance.players.find(p => p && p.playerIndex === (1 - gameState.winnerIndex));
-
-                            if (winner && loser) {
-                                try {
-                                    const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
-                                    const gameDoc = await gameDocRef.get();
-                                    if (gameDoc.exists && gameDoc.data().gameMode === 'competitive') {
-                                        await updateEloRatings(winner.userId, loser.userId);
-                                    }
-                                    
-                                    await gameDocRef.set({
-                                        status: 'finished',
-                                        endedAt: new Date(),
-                                        winnerId: winner.userId,
-                                        loserId: loser.userId,
-                                        scores: gameState.playerScores,
-                                        gameOverReason: 'standard_end'
-                                    }, { merge: true });
-
-                                } catch(e) {
-                                    console.error(`Chyba pri finalizácii hry ${gameInstance.gameId}:`, e);
-                                }
-                            }
-                        } else {
-                            // HRA POKRAČUJE - bežný ťah
-                            while (newRack.length < 7) { newRack.push(null); }
-                            gameState.playerRacks[playerIndex] = newRack;
-
-                            gameState.letterBag = remainingBag;
-                            gameState.isBagEmpty = bagEmpty;
-                            gameState.boardAtStartOfTurn = gameState.board.map(row => [...row]);
-                            gameState.currentPlayerIndex = opponentIndex;
-                            gameState.consecutivePasses = 0;
-                        }
-                    } else {
-                        // --- ŤAH ZAMIETNUTÝ ---
-                        const { playerIndex } = pendingTurn;
-                        
-                        gameState.currentPlayerIndex = playerIndex;
-                    }
+                        // --- ŤAH SCHVÁLENÝ ---
+                        const { playerIndex, placedLetters, turnScore, allFormedWords } = pendingTurn;
+                        
+                        gameState.playerScores[playerIndex] += turnScore;
+                        gameState.isFirstTurn = false;
+                        
+                        const turnDetails = {
+                            actionType: 'placeLetters',
+                            playerIndex: playerIndex,
+                            placedLetters: placedLetters,
+                            newWords: allFormedWords,
+                            score: turnScore,
+                            timestamp: Date.now(),
+                        };
+                        try {
+                            const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
+                            await turnLogCollectionRef.add(turnDetails);
+                        } catch (e) {
+                            console.error(`Chyba pri ukladaní schváleného ťahu do logu:`, e);
+                        }
+                        
+                        const numToDraw = placedLetters.length;
+                        const { drawnLetters, remainingBag, bagEmpty } = drawLetters(gameState.letterBag, numToDraw);
+                        
+                        let currentRack = gameState.playerRacks[playerIndex].filter(l => l !== null && !placedLetters.some(p => p.letterData.id === l.id));
+                        let newRack = [...currentRack, ...drawnLetters];
+                        
+                        // --- NOVÁ KONTROLA KONCA HRY ---
+                        if (bagEmpty && newRack.length === 0) {
+                            // HRA SKONČILA
+                            gameState.playerRacks[playerIndex] = newRack.map(() => null);
+                            gameState.letterBag = remainingBag;
+                            gameState.isBagEmpty = true;
+                            gameState.isGameOver = true;
+                            
+                            await calculateAndLogFinalScores(gameInstance, dbAdmin, {
+                                reason: 'standard_end',
+                                finishingPlayerIndex: playerIndex
+                            });
+                            
+                            const winner = gameInstance.players.find(p => p && p.playerIndex === gameState.winnerIndex);
+                            const loser = gameInstance.players.find(p => p && p.playerIndex === (1 - gameState.winnerIndex));
+                            
+                            if (winner && loser) {
+                                try {
+                                    const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                                    const gameDoc = await gameDocRef.get();
+                                    if (gameDoc.exists && gameDoc.data().gameMode === 'competitive') {
+                                        await updateEloRatings(winner.userId, loser.userId);
+                                    }
+                                    
+                                    await gameDocRef.set({
+                                        status: 'finished',
+                                        endedAt: new Date(),
+                                        winnerId: winner.userId,
+                                        loserId: loser.userId,
+                                        scores: gameState.playerScores,
+                                        gameOverReason: 'standard_end'
+                                    }, { merge: true });
+                                } catch(e) {
+                                    console.error(`Chyba pri finalizácii hry ${gameInstance.gameId}:`, e);
+                                }
+                            }
+                        } else {
+                            // HRA POKRAČUJE - bežný ťah
+                            while (newRack.length < 7) { newRack.push(null); }
+                            gameState.playerRacks[playerIndex] = newRack;
+                            
+                            gameState.letterBag = remainingBag;
+                            gameState.isBagEmpty = bagEmpty;
+                            gameState.boardAtStartOfTurn = gameState.board.map(row => [...row]);
+                            gameState.currentPlayerIndex = opponentIndex;
+                            gameState.consecutivePasses = 0;
+                            gameState.hasPlacedOnBoardThisTurn = false;
+                            gameState.hasMovedToExchangeZoneThisTurn = false;
+                            gameState.exchangeZoneLetters = [];
+                        }
+                    } else {
+                        // --- ŤAH ZAMIETNUTÝ ---
+                        const { playerIndex } = pendingTurn;
+                        
+                        gameState.currentPlayerIndex = playerIndex;
+                    }
                     
                     // Vyčistíme dočasné dáta a vrátime hru do normálu
                     gameState.gameStatus = 'in_progress';
