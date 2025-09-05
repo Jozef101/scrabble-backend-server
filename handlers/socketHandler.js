@@ -636,59 +636,58 @@ export default function initializeSocket(io, dbAdmin) {
                     }
                     break;
                 case 'submitTurnForApproval': {
-                    if (gameInstance.gameState) {
-                        // Získame všetky dáta z payloadu
-                        const { placedLetters, unverifiedWords, turnScore, allFormedWords } = action.payload;
-
-                        // Nastavíme nový stav hry
-                        gameInstance.gameState.gameStatus = 'AWAITING_WORD_VALIDATION';
-                        
-                        // Uložíme si všetky informácie o ťahu
-                        gameInstance.gameState.pendingTurn = {
-                            playerIndex: socket.playerIndex,
-                            placedLetters: placedLetters,
-                            unverifiedWords: unverifiedWords,
-                            turnScore: turnScore, // Uložíme aj skóre
-                            allFormedWords: allFormedWords // Uložíme aj slová
-                        };
-
-                        // Uložíme zmenený stav hry do DB
-                        if (dbAdmin) {
-                            try {
-                                const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
-                                await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
-                            } catch (e) {
-                                console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} pri čakaní na schválenie:`, e);
-                            }
-                        }
-                        
-                        // Rozošleme všetkým hráčom nový stav
-                        io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
-                    }
-                    break;
-                }
+                    if (gameInstance.gameState) {
+                        // Získame všetky dáta z payloadu
+                        
+                        const { placedLetters, unverifiedWords, turnScore, allFormedWords } = action.payload;
+                        // // Nastavíme nový stav hry
+                        gameInstance.gameState.gameStatus = 'AWAITING_WORD_VALIDATION';
+                        
+                        // Uložíme si všetky informácie o ťahu
+                        gameInstance.gameState.pendingTurn = {
+                            playerIndex: socket.playerIndex,
+                            placedLetters: placedLetters,
+                            unverifiedWords: unverifiedWords,
+                            turnScore: turnScore, // Uložíme aj skóre
+                            allFormedWords: allFormedWords // Uložíme aj slová
+                        };
+                        
+                        // Uložíme zmenený stav hry do DB
+                        if (dbAdmin) {
+                            try {
+                                const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
+                                await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                            } catch (e) {
+                                console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} pri čakaní na schválenie:`, e);
+                            }
+                        }
+                        
+                        // Rozošleme všetkým hráčom nový stav
+                        io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                    }
+                    break;
+                }
 case 'resolveTurnValidation': {
-                    const { approved } = action.payload;
-                    const { gameState } = gameInstance;
-                    const { pendingTurn } = gameState;
-
-                    // --- Validácia ---
-                    if (gameState.gameStatus !== 'AWAITING_WORD_VALIDATION' || !pendingTurn) {
-                        return socket.emit('gameError', 'Hra nie je v stave čakania na schválenie.');
-                    }
-                    const opponentIndex = 1 - pendingTurn.playerIndex;
-                    if (socket.playerIndex !== opponentIndex) {
-                        return socket.emit('gameError', 'Iba súper môže schváliť alebo zamietnuť ťah.');
-                    }
-                    // --- Koniec validácie ---
-
-                    if (approved) {
+                    const { approved } = action.payload;
+                    const { gameState } = gameInstance;
+                    const { pendingTurn } = gameState;
+                    
+                    // --- Validácia ---
+                    if (gameState.gameStatus !== 'AWAITING_WORD_VALIDATION' || !pendingTurn) {
+                        return socket.emit('gameError', 'Hra nie je v stave čakania na schválenie.');
+                    }
+                    const opponentIndex = 1 - pendingTurn.playerIndex;
+                    if (socket.playerIndex !== opponentIndex) {
+                        return socket.emit('gameError', 'Iba súper môže schváliť alebo zamietnuť ťah.');
+                    }
+                    
+                    if (approved) {
                         // --- ŤAH SCHVÁLENÝ ---
                         const { playerIndex, placedLetters, turnScore, allFormedWords } = pendingTurn;
                         
                         gameState.playerScores[playerIndex] += turnScore;
-
-                        // Vytvoríme a uložíme záznam o ťahu - TÝMTO OPRAVÍME BUG
+                        gameState.isFirstTurn = false;
+                        
                         const turnDetails = {
                             actionType: 'placeLetters',
                             playerIndex: playerIndex,
@@ -709,38 +708,79 @@ case 'resolveTurnValidation': {
                         
                         let currentRack = gameState.playerRacks[playerIndex].filter(l => l !== null && !placedLetters.some(p => p.letterData.id === l.id));
                         let newRack = [...currentRack, ...drawnLetters];
-                        while (newRack.length < 7) { newRack.push(null); }
-                        gameState.playerRacks[playerIndex] = newRack;
 
-                        gameState.letterBag = remainingBag;
-                        gameState.isBagEmpty = bagEmpty;
-                        gameState.boardAtStartOfTurn = gameState.board.map(row => [...row]);
-                        gameState.currentPlayerIndex = opponentIndex;
-                        gameState.consecutivePasses = 0;
-                        
+                        // --- NOVÁ KONTROLA KONCA HRY ---
+                        if (bagEmpty && newRack.length === 0) {
+                            // HRA SKONČILA
+                            gameState.playerRacks[playerIndex] = newRack.map(() => null);
+                            gameState.letterBag = remainingBag;
+                            gameState.isBagEmpty = true;
+                            gameState.isGameOver = true;
+
+                            await calculateAndLogFinalScores(gameInstance, dbAdmin, {
+                                reason: 'standard_end',
+                                finishingPlayerIndex: playerIndex
+                            });
+                            
+                            const winner = gameInstance.players.find(p => p && p.playerIndex === gameState.winnerIndex);
+                            const loser = gameInstance.players.find(p => p && p.playerIndex === (1 - gameState.winnerIndex));
+
+                            if (winner && loser) {
+                                try {
+                                    const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                                    const gameDoc = await gameDocRef.get();
+                                    if (gameDoc.exists && gameDoc.data().gameMode === 'competitive') {
+                                        await updateEloRatings(winner.userId, loser.userId);
+                                    }
+                                    
+                                    await gameDocRef.set({
+                                        status: 'finished',
+                                        endedAt: new Date(),
+                                        winnerId: winner.userId,
+                                        loserId: loser.userId,
+                                        scores: gameState.playerScores,
+                                        gameOverReason: 'standard_end'
+                                    }, { merge: true });
+
+                                } catch(e) {
+                                    console.error(`Chyba pri finalizácii hry ${gameInstance.gameId}:`, e);
+                                }
+                            }
+                        } else {
+                            // HRA POKRAČUJE - bežný ťah
+                            while (newRack.length < 7) { newRack.push(null); }
+                            gameState.playerRacks[playerIndex] = newRack;
+
+                            gameState.letterBag = remainingBag;
+                            gameState.isBagEmpty = bagEmpty;
+                            gameState.boardAtStartOfTurn = gameState.board.map(row => [...row]);
+                            gameState.currentPlayerIndex = opponentIndex;
+                            gameState.consecutivePasses = 0;
+                        }
                     } else {
                         // --- ŤAH ZAMIETNUTÝ ---
                         const { playerIndex } = pendingTurn;
+                        
                         gameState.currentPlayerIndex = playerIndex;
                     }
-
-                    // Vyčistíme dočasné dáta a vrátime hru do normálu
-                    gameState.gameStatus = 'in_progress';
-                    delete gameState.pendingTurn;
-                    
-                    if (dbAdmin) {
-                        try {
-                            const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
-                            await gameStateDocRef.set({ gameState: JSON.stringify(gameState) }, { merge: true });
-                        } catch (e) {
-                            console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} po vyriešení ťahu:`, e);
-                        }
-                    }
-
-                    io.to(gameInstance.gameId).emit('gameStateUpdate', gameState);
-                    
-                    break;
-                }
+                    
+                    // Vyčistíme dočasné dáta a vrátime hru do normálu
+                    gameState.gameStatus = 'in_progress';
+                    delete gameState.pendingTurn;
+                    
+                    if (dbAdmin) {
+                        try {
+                            const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
+                            await gameStateDocRef.set({ gameState: JSON.stringify(gameState) }, { merge: true });
+                        } catch (e) {
+                            console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} po vyriešení ťahu:`, e);
+                        }
+                    }
+                    
+                    io.to(gameInstance.gameId).emit('gameStateUpdate', gameState);
+                    
+                    break;
+                }
                 case 'updateGameState':
                     if (gameInstance.gameState) {
                         gameInstance.gameState = { ...gameInstance.gameState, ...action.payload };
