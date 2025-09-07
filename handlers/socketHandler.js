@@ -592,6 +592,10 @@ export default function initializeSocket(io, dbAdmin) {
                             if (dbAdmin) {
                                 const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
                                 await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                                const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                                await gameDocRef.set({
+                                    currentPlayerIndex: startingPlayerIndex
+                                }, { merge: true });
                             }
                             io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState); // Spustíme hru
                         }, 4000);
@@ -642,6 +646,7 @@ export default function initializeSocket(io, dbAdmin) {
                         const { placedLetters, unverifiedWords, turnScore, allFormedWords } = action.payload;
                         // // Nastavíme nový stav hry
                         gameInstance.gameState.gameStatus = 'AWAITING_WORD_VALIDATION';
+                        gameInstance.gameState.currentPlayerIndex = 1 - socket.playerIndex;
                         
                         // Uložíme si všetky informácie o ťahu
                         gameInstance.gameState.pendingTurn = {
@@ -657,6 +662,10 @@ export default function initializeSocket(io, dbAdmin) {
                             try {
                                 const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
                                 await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                                const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                                await gameDocRef.set({
+                                    currentPlayerIndex: gameInstance.gameState.currentPlayerIndex
+                                }, { merge: true });
                             } catch (e) {
                                 console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} pri čakaní na schválenie:`, e);
                             }
@@ -684,7 +693,7 @@ export default function initializeSocket(io, dbAdmin) {
                     if (approved) {
                         // --- ŤAH SCHVÁLENÝ ---
                         const { playerIndex, placedLetters, turnScore, allFormedWords } = pendingTurn;
-                        
+
                         gameState.playerScores[playerIndex] += turnScore;
                         gameState.isFirstTurn = false;
                         
@@ -699,6 +708,10 @@ export default function initializeSocket(io, dbAdmin) {
                         try {
                             const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
                             await turnLogCollectionRef.add(turnDetails);
+                            const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                            await gameDocRef.set({
+                                currentPlayerIndex: gameState.currentPlayerIndex
+                            }, { merge: true });
                         } catch (e) {
                             console.error(`Chyba pri ukladaní schváleného ťahu do logu:`, e);
                         }
@@ -764,6 +777,12 @@ export default function initializeSocket(io, dbAdmin) {
                         const { playerIndex } = pendingTurn;
                         
                         gameState.currentPlayerIndex = playerIndex;
+                        if (dbAdmin) {
+                            const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
+                            await gameDocRef.set({
+                                currentPlayerIndex: gameState.currentPlayerIndex
+                            }, { merge: true });
+                        }
                     }
                     
                     // Vyčistíme dočasné dáta a vrátime hru do normálu
