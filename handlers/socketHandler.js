@@ -666,6 +666,15 @@ export default function initializeSocket(io, dbAdmin) {
                                 await gameDocRef.set({
                                     currentPlayerIndex: gameInstance.gameState.currentPlayerIndex
                                 }, { merge: true });
+                                const logEntry = {
+                                    actionType: 'turn_validation_pending',
+                                    playerIndex: socket.playerIndex,
+                                    opponentIndex: 1 - socket.playerIndex,
+                                    unverifiedWords: unverifiedWords,
+                                    timestamp: Date.now()
+                                };
+                                const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
+                                await turnLogCollectionRef.add(logEntry);
                             } catch (e) {
                                 console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} pri čakaní na schválenie:`, e);
                             }
