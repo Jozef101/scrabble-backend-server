@@ -780,6 +780,8 @@ export default function initializeSocket(io, dbAdmin) {
                             gameState.hasPlacedOnBoardThisTurn = false;
                             gameState.hasMovedToExchangeZoneThisTurn = false;
                             gameState.exchangeZoneLetters = [];
+                            const newHighlightedLetters = placedLetters.map(letter => ({ x: letter.x, y: letter.y }));
+                            gameState.highlightedLetters = newHighlightedLetters;
                         }
                     } else {
                         // --- ŤAH ZAMIETNUTÝ ---
