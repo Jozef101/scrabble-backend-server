@@ -785,20 +785,20 @@ export default function initializeSocket(io, dbAdmin) {
                         // --- ŤAH ZAMIETNUTÝ ---
 
                         const logEntry = {
-                            actionType: 'turn_rejected',
-                            playerIndex: socket.playerIndex, // Hráč, ktorý zamietol (súper)
-                            originalPlayerIndex: pendingTurn.playerIndex, // Hráč, ktorého ťah bol zamietnutý
-                            unverifiedWords: pendingTurn.unverifiedWords,
-                            timestamp: Date.now()
-                        };
-                        if (dbAdmin) {
-                            try {
-                                const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
-                                await turnLogCollectionRef.add(logEntry);
-                            } catch (e) {
-                                console.error(`Chyba pri ukladaní zamietnutého ťahu do logu:`, e);
-                            }
-                        }
+                            actionType: 'turn_rejected',
+                            playerIndex: socket.playerIndex, // Hráč, ktorý zamietol (súper)
+                            originalPlayerIndex: pendingTurn.playerIndex, // Hráč, ktorého ťah bol zamietnutý
+                            unverifiedWords: pendingTurn.unverifiedWords,
+                            timestamp: Date.now()
+                        };
+                        if (dbAdmin) {
+                            try {
+                                const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
+                                await turnLogCollectionRef.add(logEntry);
+                            } catch (e) {
+                                console.error(`Chyba pri ukladaní zamietnutého ťahu do logu:`, e);
+                            }
+                        }
 
                         const { playerIndex } = pendingTurn;
                         
