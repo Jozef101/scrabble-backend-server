@@ -1216,14 +1216,14 @@ export default function initializeSocket(io, dbAdmin) {
             const connectedPlayersCount = gameInstance.players.filter(p => p !== null && p.socketId !== null).length;
 
             if (connectedPlayersCount === 0) {
-                console.log(`Hra ${gameId}: Všetci klienti odpojení. Nastavujem timeout pre vymazanie z pamäte.`);
-                const timeoutId = setTimeout(async () => {
-                    await resetGameInstance(gameInstance);
-                    games.delete(gameId);
-                    gameTimeouts.delete(gameId);
-                    console.log(`Hra ${gameId} bola vymazaná z pamäte servera a dát z Firestore po neaktivite.`);
-                }, INACTIVITY_TIMEOUT_MS);
-                gameTimeouts.set(gameId, timeoutId);
+                // console.log(`Hra ${gameId}: Všetci klienti odpojení. Nastavujem timeout pre vymazanie z pamäte.`);
+                // const timeoutId = setTimeout(async () => {
+                //     await resetGameInstance(gameInstance);
+                //     games.delete(gameId);
+                //     gameTimeouts.delete(gameId);
+                //     console.log(`Hra ${gameId} bola vymazaná z pamäte servera a dát z Firestore po neaktivite.`);
+                // }, INACTIVITY_TIMEOUT_MS);
+                // gameTimeouts.set(gameId, timeoutId);
             } else {
                 if (connectedPlayersCount === 1) {
                     io.to(gameInstance.gameId).emit('waitingForPlayers', 'Čaká sa na druhého hráča...');
