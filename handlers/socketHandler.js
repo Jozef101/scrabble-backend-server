@@ -701,7 +701,15 @@ export default function initializeSocket(io, dbAdmin) {
                     
                     if (approved) {
                         // --- ŤAH SCHVÁLENÝ ---
+
                         const { playerIndex, placedLetters, turnScore, allFormedWords } = pendingTurn;
+
+                        gameState.lastTurnInfo = {
+                            playerIndex: playerIndex,
+                            score: turnScore,
+                            words: allFormedWords,
+                            type: 'approved' // Typ pre rozlíšenie, že ide o schválený ťah
+                        };
 
                         gameState.playerScores[playerIndex] += turnScore;
                         gameState.isFirstTurn = false;
@@ -786,6 +794,13 @@ export default function initializeSocket(io, dbAdmin) {
                     } else {
                         // --- ŤAH ZAMIETNUTÝ ---
 
+                        gameState.lastTurnInfo = {
+                            playerIndex: pendingTurn.playerIndex, // Koho ťah bol zamietnutý
+                            opponentIndex: socket.playerIndex, // Kto ho zamietol
+                            words: pendingTurn.unverifiedWords,
+                            type: 'rejected'
+                            };
+                            
                         const logEntry = {
                             actionType: 'turn_rejected',
                             playerIndex: socket.playerIndex, // Hráč, ktorý zamietol (súper)
