@@ -495,6 +495,12 @@ export default function initializeSocket(io, dbAdmin) {
                 return;
             }
 
+            if (gameInstance.gameState && gameInstance.gameState.lastTurnInfo) {
+                console.log("TOTO CHCEM VIDIET");
+                console.log(gameInstance.gameState.lastTurnInfo);
+                delete gameInstance.gameState.lastTurnInfo;
+            }
+
             console.log(`Akcia od Hráča ${socket.playerIndex + 1} v hre ${gameInstance.gameId}: ${action.type}`);
 
             switch (action.type) {
@@ -850,7 +856,8 @@ export default function initializeSocket(io, dbAdmin) {
                 }
                 case 'updateGameState':
                     if (gameInstance.gameState) {
-                        gameInstance.gameState = { ...gameInstance.gameState, ...action.payload };
+                        const { lastTurnInfo, ...restOfPayload } = action.payload;
+                        gameInstance.gameState = { ...gameInstance.gameState, ...restOfPayload };
                         
                         // ZMENA: Namiesto balíka počítame písmená na doske
                         const tilesOnBoardCount = countTilesOnBoard(gameInstance.gameState.board);
