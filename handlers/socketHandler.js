@@ -730,6 +730,16 @@ export default function initializeSocket(io, dbAdmin) {
                             timestamp: Date.now(),
                         };
                         try {
+                            // Záznam o schválení ťahu
+                            const approvalLogEntry = {
+                                actionType: 'turn_approved',
+                                playerIndex: socket.playerIndex,
+                                originalPlayerIndex: pendingTurn.playerIndex,
+                                timestamp: Date.now() - 1
+                            };
+                            const approveLogRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
+                            await approveLogRef.add(approvalLogEntry);
+
                             const turnLogCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('turnLogs');
                             await turnLogCollectionRef.add(turnDetails);
                             const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
