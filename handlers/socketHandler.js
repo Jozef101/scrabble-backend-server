@@ -664,7 +664,8 @@ export default function initializeSocket(io, dbAdmin) {
                                 await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
                                 const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
                                 await gameDocRef.set({
-                                    currentPlayerIndex: gameInstance.gameState.currentPlayerIndex
+                                    currentPlayerIndex: gameInstance.gameState.currentPlayerIndex,
+                                    status: 'AWAITING_WORD_VALIDATION',
                                 }, { merge: true });
                                 const logEntry = {
                                     actionType: 'turn_validation_pending',
@@ -727,7 +728,8 @@ export default function initializeSocket(io, dbAdmin) {
                             await turnLogCollectionRef.add(turnDetails);
                             const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
                             await gameDocRef.set({
-                                currentPlayerIndex: gameState.currentPlayerIndex
+                                currentPlayerIndex: gameState.currentPlayerIndex,
+                                status: 'in-progress'
                             }, { merge: true });
                         } catch (e) {
                             console.error(`Chyba pri ukladaní schváleného ťahu do logu:`, e);
@@ -823,7 +825,8 @@ export default function initializeSocket(io, dbAdmin) {
                         if (dbAdmin) {
                             const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId);
                             await gameDocRef.set({
-                                currentPlayerIndex: gameState.currentPlayerIndex
+                                currentPlayerIndex: gameState.currentPlayerIndex,
+                                status: 'in-progress'
                             }, { merge: true });
                         }
                     }
