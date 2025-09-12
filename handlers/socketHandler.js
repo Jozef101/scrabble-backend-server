@@ -367,7 +367,8 @@ export default function initializeSocket(io, dbAdmin) {
                     gameInstance.gameState.playerNicknames = playerNicknamesMap;
                     gameInstance.gameState.players = gameInstance.players;
                     
-                    io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                    // io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                    socket.emit('gameStateUpdate', gameInstance.gameState);
                     
                     // Načítanie a odoslanie chatovej histórie
                     try {
@@ -433,7 +434,8 @@ export default function initializeSocket(io, dbAdmin) {
                     gameInstance.gameState.gameMode = 'competitive';
                 }
                 
-                io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                // io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
+                socket.emit('gameStateUpdate', gameInstance.gameState);
                 const connectedPlayersCount = gameInstance.players.filter(p => p !== null && p.socketId !== null).length;
 
                 if (connectedPlayersCount < 2) {
@@ -631,14 +633,14 @@ export default function initializeSocket(io, dbAdmin) {
                         gameInstance.gameState = newGameState;
 
                         // Uložíme nový stav do DB a rozošleme všetkým
-                        if (dbAdmin) {
-                            try {
-                                const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
-                                await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
-                            } catch (e) {
-                                console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z akcie moveLetter:`, e);
-                            }
-                        }
+                        // if (dbAdmin) {
+                        //     try {
+                        //         const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
+                        //         await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                        //     } catch (e) {
+                        //         console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z akcie moveLetter:`, e);
+                        //     }
+                        // }
                         io.to(gameInstance.gameId).emit('moveLetter', {
                             ...action.payload,
                             playerIndex: socket.playerIndex
