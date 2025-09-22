@@ -7,6 +7,7 @@ import admin from 'firebase-admin';
 // Globálny manažér hier (uchováva viacero herných inštancií)
 export const games = new Map();
 export const gameTimeouts = new Map();
+export const activeTimers = new Map();
 
 // Tabuľka očakávaných výsledkov pre ELO systém.
 const EXPECTED_SCORE_TABLE = [
