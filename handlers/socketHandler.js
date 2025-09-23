@@ -292,6 +292,16 @@ async function handleTimeTick(gameId, io) {
                             loserId: loser.userId,
                             scores: gameState.playerScores,
                             gameOverReason: 'timeout',
+                            players: gameInstance.players
+                            .filter((p) => p !== null)
+                            .map((p) => ({
+                                id: p.userId,
+                                nickname: p.nickname,
+                                playerIndex: p.playerIndex,
+                                elo: p.elo,
+                                score: gameState.playerScores[p.playerIndex],
+                                rack: gameState.playerRacks[p.playerIndex]
+                            })),
                         },
                         { merge: true }
                     );
@@ -922,6 +932,7 @@ export default function initializeSocket(io, dbAdmin) {
 
                         setTimeout(async () => {
                             // --- INICIALIZÁCIA ČASOVAČA ---
+                            const { gameState } = gameInstance;
                             let playerTimes = null;
                             if (dbAdmin) {
                                 try {
@@ -1017,6 +1028,16 @@ export default function initializeSocket(io, dbAdmin) {
                                 await gameDocRef.set(
                                     {
                                         currentPlayerIndex: startingPlayerIndex,
+                                        players: gameInstance.players
+                                        .filter((p) => p !== null)
+                                        .map((p) => ({
+                                            id: p.userId,
+                                            nickname: p.nickname,
+                                            playerIndex: p.playerIndex,
+                                            elo: p.elo,
+                                            score: gameState.playerScores[p.playerIndex],
+                                            rack: gameState.playerRacks[p.playerIndex]
+                                        })),
                                     },
                                     { merge: true }
                                 );
@@ -1120,6 +1141,7 @@ export default function initializeSocket(io, dbAdmin) {
 
                         // Uložíme zmenený stav hry do DB
                         if (dbAdmin) {
+                            const { gameState } = gameInstance;
                             try {
                                 const gameStateDocRef = dbAdmin
                                     .collection('scrabbleGames')
@@ -1143,6 +1165,16 @@ export default function initializeSocket(io, dbAdmin) {
                                             gameInstance.gameState
                                                 .currentPlayerIndex,
                                         status: 'AWAITING_WORD_VALIDATION',
+                                        players: gameInstance.players
+                                        .filter((p) => p !== null)
+                                        .map((p) => ({
+                                            id: p.userId,
+                                            nickname: p.nickname,
+                                            playerIndex: p.playerIndex,
+                                            elo: p.elo,
+                                            score: gameState.playerScores[p.playerIndex],
+                                            rack: gameState.playerRacks[p.playerIndex]
+                                        })),
                                     },
                                     { merge: true }
                                 );
@@ -1249,9 +1281,19 @@ export default function initializeSocket(io, dbAdmin) {
                                 .doc(gameInstance.gameId);
                             await gameDocRef.set(
                                 {
-                                    currentPlayerIndex:
-                                        gameState.currentPlayerIndex,
+                                    currentPlayerIndex: gameState.currentPlayerIndex,
                                     status: 'in-progress',
+                                    players: gameInstance.players
+                                        .filter((p) => p !== null)
+                                        .map((p) => ({
+                                            id: p.userId,
+                                            nickname: p.nickname,
+                                            playerIndex: p.playerIndex,
+                                            elo: p.elo,
+                                            score: gameState.playerScores[p.playerIndex],
+                                            rack: gameState.playerRacks[p.playerIndex]
+                                        })),
+                                    scores: gameState.playerScores,
                                 },
                                 { merge: true }
                             );
@@ -1331,6 +1373,16 @@ export default function initializeSocket(io, dbAdmin) {
                                             loserId: loser.userId,
                                             scores: gameState.playerScores,
                                             gameOverReason: 'standard_end',
+                                            players: gameInstance.players
+                                            .filter((p) => p !== null)
+                                            .map((p) => ({
+                                                id: p.userId,
+                                                nickname: p.nickname,
+                                                playerIndex: p.playerIndex,
+                                                elo: p.elo,
+                                                score: gameState.playerScores[p.playerIndex],
+                                                rack: gameState.playerRacks[p.playerIndex]
+                                            })),
                                         },
                                         { merge: true }
                                     );
@@ -1405,9 +1457,19 @@ export default function initializeSocket(io, dbAdmin) {
                                 .doc(gameInstance.gameId);
                             await gameDocRef.set(
                                 {
-                                    currentPlayerIndex:
-                                        gameState.currentPlayerIndex,
+                                    currentPlayerIndex:gameState.currentPlayerIndex,
                                     status: 'in-progress',
+                                    players: gameInstance.players
+                                        .filter((p) => p !== null)
+                                        .map((p) => ({
+                                            id: p.userId,
+                                            nickname: p.nickname,
+                                            playerIndex: p.playerIndex,
+                                            elo: p.elo,
+                                            score: gameState.playerScores[p.playerIndex],
+                                            rack: gameState.playerRacks[p.playerIndex]
+                                        })),
+                                    scores: gameState.playerScores,
                                 },
                                 { merge: true }
                             );
@@ -1575,6 +1637,7 @@ export default function initializeSocket(io, dbAdmin) {
                                                       p.playerIndex
                                                   ]
                                                 : 0,
+                                            rack: gameInstance.gameState.playerRacks[p.playerIndex],
                                         })),
                                     scores: gameInstance.gameState
                                         .playerScores || [0, 0],
@@ -1840,6 +1903,7 @@ export default function initializeSocket(io, dbAdmin) {
 
                         // Aktualizujeme hlavný dokument hry vo Firestore
                         if (dbAdmin) {
+                            const { gameState } = gameInstance;
                             try {
                                 const gameDocRef = dbAdmin
                                     .collection('scrabbleGames')
@@ -1851,6 +1915,17 @@ export default function initializeSocket(io, dbAdmin) {
                                         winnerId: winner.userId,
                                         loserId: loser.userId,
                                         gameOverReason: 'surrender',
+                                        scores: gameInstance.gameState.playerScores,
+                                        players: gameInstance.players
+                                        .filter((p) => p !== null)
+                                        .map((p) => ({
+                                            id: p.userId,
+                                            nickname: p.nickname,
+                                            playerIndex: p.playerIndex,
+                                            elo: p.elo,
+                                            score: gameState.playerScores[p.playerIndex],
+                                            rack: gameState.playerRacks[p.playerIndex]
+                                        })),
                                     },
                                     { merge: true }
                                 );
@@ -1936,6 +2011,7 @@ export default function initializeSocket(io, dbAdmin) {
                     gameInstance.gameState.winnerIndex = winnerIndex;
 
                     if (dbAdmin) {
+                        const { gameState } = gameInstance;
                         const gameDocRef = dbAdmin
                             .collection('scrabbleGames')
                             .doc(gameInstance.gameId);
@@ -1943,6 +2019,16 @@ export default function initializeSocket(io, dbAdmin) {
                             status: 'finished',
                             endedAt: new Date(),
                             scores: finalScores,
+                            players: gameInstance.players
+                            .filter((p) => p !== null)
+                            .map((p) => ({
+                                id: p.userId,
+                                nickname: p.nickname,
+                                playerIndex: p.playerIndex,
+                                elo: p.elo,
+                                score: gameState.playerScores[p.playerIndex],
+                                rack: gameState.playerRacks[p.playerIndex]
+                            })),
                         });
                     }
 
