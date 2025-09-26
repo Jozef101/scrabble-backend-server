@@ -581,38 +581,25 @@ export default function initializeSocket(io, dbAdmin) {
                         );
                     }
 
-                    // Načítaj stav hry z podkolekcie
-                    const gameStateDocRef = dbAdmin
-                        .collection('scrabbleGames')
-                        .doc(gameIdFromClient)
-                        .collection('gameStates')
-                        .doc('state');
-                    const docSnap = await gameStateDocRef.get();
+                    // Ak v pamäti servera ešte neexistuje stav hry (napr. po reštarte servera),
+                    // pokúsime sa ho načítať z databázy.
+                    if (!gameInstance.gameState) {
+                        console.log(`Stav hry ${gameIdFromClient} nie je v pamäti, načítavam z DB...`);
+                        const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient).collection('gameStates').doc('state');
+                        const docSnap = await gameStateDocRef.get();
 
-                    if (
-                        docSnap.exists &&
-                        docSnap.data() &&
-                        docSnap.data().gameState
-                    ) {
-                        const loadedState = JSON.parse(
-                            docSnap.data().gameState
-                        );
-                        gameInstance.gameState = loadedState;
-                        gameInstance.isGameStarted = true;
-                    } else {
-                        gameInstance.gameState = generateInitialGameState();
-                        gameInstance.isGameStarted = true;
-                        await gameStateDocRef.set(
-                            {
-                                gameState: JSON.stringify(
-                                    gameInstance.gameState
-                                ),
-                            },
-                            { merge: true }
-                        );
-                        console.log(
-                            `Nový stav hry ${gameIdFromClient} inicializovaný a uložený do Firestore.`
-                        );
+                        if (docSnap.exists && docSnap.data() && docSnap.data().gameState) {
+                            const loadedState = JSON.parse(docSnap.data().gameState);
+                            gameInstance.gameState = loadedState;
+                            gameInstance.isGameStarted = true;
+                            console.log(`Stav hry ${gameIdFromClient} úspešne načítaný z DB.`);
+                            } else {
+                            // Ak stav nie je ani v pamäti, ani v DB, vygenerujeme nový.
+                            gameInstance.gameState = generateInitialGameState();
+                            gameInstance.isGameStarted = true;
+                            await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                            console.log(`Nový stav hry ${gameIdFromClient} inicializovaný a uložený do Firestore.`);
+                        }
                     }
 
                     // Získaj stav progresu priamo z dát.
