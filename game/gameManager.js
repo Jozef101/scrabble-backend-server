@@ -180,10 +180,6 @@ export async function resetGameInstance(gameInstance) {
 
     if (dbAdmin) {
         try {
-            const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('gameStates').doc('state');
-            await gameStateDocRef.delete();
-            console.log(`Stav hry ${gameInstance.gameId} odstránený z Firestore.`);
-
             const chatMessagesCollectionRef = dbAdmin.collection('scrabbleGames').doc(gameInstance.gameId).collection('chatMessages');
             const q = chatMessagesCollectionRef.orderBy('timestamp');
             const querySnapshot = await q.get();

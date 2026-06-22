@@ -12,6 +12,129 @@ import { LETTER_VALUES } from '../config/constants.js';
 import { dbAdmin } from '../config/firebase.js';
 
 /**
+ * Uloží kompletný stav hry ako štruktúrované polia do hlavného dokumentu scrabbleGames/{gameId}.
+ * @param {object} gameInstance - Aktuálna inštancia hry.
+ * @param {object} db - Inštancia Firestore admin.
+ * @param {object} extraFields - Voliteľné extra polia (napr. endedAt, winnerId...).
+ */
+async function saveGameState(gameInstance, db, extraFields = {}) {
+    if (!db || !gameInstance.gameState) return;
+    const { gameState } = gameInstance;
+
+    const playersData = gameInstance.players
+        .filter((p) => p !== null)
+        .map((p) => ({
+            id: p.userId,
+            nickname: p.nickname,
+            playerIndex: p.playerIndex,
+            elo: p.elo,
+            score: gameState.playerScores[p.playerIndex],
+            rack: gameState.playerRacks[p.playerIndex],
+        }));
+
+    const firestoreStatus = gameState.isGameOver
+        ? 'finished'
+        : gameState.gameStatus === 'AWAITING_WORD_VALIDATION'
+        ? 'AWAITING_WORD_VALIDATION'
+        : 'in-progress';
+
+    try {
+        await db.collection('scrabbleGames').doc(gameInstance.gameId).set({
+            board: gameState.board,
+            boardAtStartOfTurn: gameState.boardAtStartOfTurn,
+            letterBag: gameState.letterBag,
+            playerRacks: gameState.playerRacks,
+            playerScores: gameState.playerScores,
+            scores: gameState.playerScores,
+            playerTimes: gameState.playerTimes ?? null,
+            currentPlayerIndex: gameState.currentPlayerIndex,
+            isFirstTurn: gameState.isFirstTurn,
+            isBagEmpty: gameState.isBagEmpty,
+            exchangeZoneLetters: gameState.exchangeZoneLetters,
+            hasPlacedOnBoardThisTurn: gameState.hasPlacedOnBoardThisTurn,
+            hasMovedToExchangeZoneThisTurn: gameState.hasMovedToExchangeZoneThisTurn,
+            consecutivePasses: gameState.consecutivePasses,
+            isGameOver: gameState.isGameOver,
+            gameStatus: gameState.gameStatus,
+            turnDraw: gameState.turnDraw,
+            highlightedLetters: gameState.highlightedLetters,
+            turnNumber: gameState.turnNumber ?? 0,
+            winnerIndex: gameState.winnerIndex ?? null,
+            pendingTurn: gameState.pendingTurn ?? null,
+            progress: countTilesOnBoard(gameState.board),
+            status: firestoreStatus,
+            players: playersData,
+            ...extraFields,
+        }, { merge: true });
+    } catch (e) {
+        console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId}:`, e);
+    }
+}
+
+/**
+ * Načíta stav hry zo štruktúrovaných polí hlavného dokumentu scrabbleGames/{gameId}.
+ * @param {string} gameId - ID hry.
+ * @param {object} db - Inštancia Firestore admin.
+ * @returns {object|null} Stav hry alebo null ak neexistuje.
+ */
+async function loadGameState(gameId, db) {
+    try {
+        const docSnap = await db.collection('scrabbleGames').doc(gameId).get();
+        if (!docSnap.exists) return null;
+        const data = docSnap.data();
+
+        if (data.board !== undefined) {
+            // Nový formát — štruktúrované polia v hlavnom dokumente
+            return {
+                board: data.board,
+                boardAtStartOfTurn: data.boardAtStartOfTurn,
+                letterBag: data.letterBag,
+                playerRacks: data.playerRacks,
+                playerScores: data.playerScores,
+                playerTimes: data.playerTimes ?? null,
+                currentPlayerIndex: data.currentPlayerIndex,
+                isFirstTurn: data.isFirstTurn,
+                isBagEmpty: data.isBagEmpty,
+                exchangeZoneLetters: data.exchangeZoneLetters ?? [],
+                hasPlacedOnBoardThisTurn: data.hasPlacedOnBoardThisTurn ?? false,
+                hasMovedToExchangeZoneThisTurn: data.hasMovedToExchangeZoneThisTurn ?? false,
+                consecutivePasses: data.consecutivePasses ?? 0,
+                isGameOver: data.isGameOver ?? false,
+                gameStatus: data.gameStatus ?? 'in_progress',
+                turnDraw: data.turnDraw ?? { 0: null, 1: null },
+                highlightedLetters: data.highlightedLetters ?? [],
+                turnNumber: data.turnNumber ?? 0,
+                winnerIndex: data.winnerIndex ?? null,
+                pendingTurn: data.pendingTurn ?? null,
+                gameMode: data.gameMode,
+                hasInitialGameStateReceived: true,
+                playerNicknames: {},
+            };
+        }
+
+        // Starý formát — fallback na gameStates/state subkolekciu
+        console.log(`Hra ${gameId}: board nenájdený v hlavnom dokumente, skúšam starý formát...`);
+        const legacySnap = await db
+            .collection('scrabbleGames')
+            .doc(gameId)
+            .collection('gameStates')
+            .doc('state')
+            .get();
+
+        if (legacySnap.exists && legacySnap.data()?.gameState) {
+            const loadedState = JSON.parse(legacySnap.data().gameState);
+            console.log(`Hra ${gameId}: načítaná zo starého formátu.`);
+            return loadedState;
+        }
+
+        return null;
+    } catch (e) {
+        console.error(`Chyba pri načítaní stavu hry ${gameId}:`, e);
+        return null;
+    }
+}
+
+/**
  * Vypočíta finálne skóre, vytvorí záznam o konci hry a uloží ho do DB.
  * @param {object} gameInstance - Aktuálna inštancia hry.
  * @param {object} dbAdmin - Inštancia Firestore admin.
@@ -274,43 +397,20 @@ async function handleTimeTick(gameId, io) {
                     loserIndex,
                 });
                 try {
-                    const gameDocRef = dbAdmin
-                        .collection('scrabbleGames')
-                        .doc(gameId);
+                    const gameDocRef = dbAdmin.collection('scrabbleGames').doc(gameId);
                     const gameDoc = await gameDocRef.get();
-                    if (
-                        gameDoc.exists &&
-                        gameDoc.data().gameMode === 'competitive'
-                    ) {
+                    if (gameDoc.exists && gameDoc.data().gameMode === 'competitive') {
                         await updateEloRatings(winner.userId, loser.userId);
                     }
-                    await gameDocRef.set(
-                        {
-                            status: 'finished',
-                            endedAt: new Date(),
-                            winnerId: winner.userId,
-                            loserId: loser.userId,
-                            scores: gameState.playerScores,
-                            gameOverReason: 'timeout',
-                            players: gameInstance.players
-                            .filter((p) => p !== null)
-                            .map((p) => ({
-                                id: p.userId,
-                                nickname: p.nickname,
-                                playerIndex: p.playerIndex,
-                                elo: p.elo,
-                                score: gameState.playerScores[p.playerIndex],
-                                rack: gameState.playerRacks[p.playerIndex]
-                            })),
-                        },
-                        { merge: true }
-                    );
                 } catch (e) {
-                    console.error(
-                        `Chyba pri finalizácii hry ${gameId} po vypršaní času:`,
-                        e
-                    );
+                    console.error(`Chyba pri finalizácii hry ${gameId} po vypršaní času:`, e);
                 }
+                await saveGameState(gameInstance, dbAdmin, {
+                    endedAt: new Date(),
+                    winnerId: winner.userId,
+                    loserId: loser.userId,
+                    gameOverReason: 'timeout',
+                });
             }
 
             gameState.isGameOver = true;
@@ -585,19 +685,16 @@ export default function initializeSocket(io, dbAdmin) {
                     // pokúsime sa ho načítať z databázy.
                     if (!gameInstance.gameState) {
                         console.log(`Stav hry ${gameIdFromClient} nie je v pamäti, načítavam z DB...`);
-                        const gameStateDocRef = dbAdmin.collection('scrabbleGames').doc(gameIdFromClient).collection('gameStates').doc('state');
-                        const docSnap = await gameStateDocRef.get();
+                        const loadedState = await loadGameState(gameIdFromClient, dbAdmin);
 
-                        if (docSnap.exists && docSnap.data() && docSnap.data().gameState) {
-                            const loadedState = JSON.parse(docSnap.data().gameState);
+                        if (loadedState) {
                             gameInstance.gameState = loadedState;
                             gameInstance.isGameStarted = true;
                             console.log(`Stav hry ${gameIdFromClient} úspešne načítaný z DB.`);
-                            } else {
-                            // Ak stav nie je ani v pamäti, ani v DB, vygenerujeme nový.
+                        } else {
                             gameInstance.gameState = generateInitialGameState();
                             gameInstance.isGameStarted = true;
-                            await gameStateDocRef.set({ gameState: JSON.stringify(gameInstance.gameState) }, { merge: true });
+                            await saveGameState(gameInstance, dbAdmin);
                             console.log(`Nový stav hry ${gameIdFromClient} inicializovaný a uložený do Firestore.`);
                         }
                     }
@@ -859,28 +956,7 @@ export default function initializeSocket(io, dbAdmin) {
                     // --- KROK 3: ULOŽENIE STAVU A ROZHODNUTIE, ČO ĎALEJ ---
 
                     // Najprv vždy uložíme aktuálny stav po losovaní do DB
-                    if (dbAdmin) {
-                        try {
-                            const gameStateDocRef = dbAdmin
-                                .collection('scrabbleGames')
-                                .doc(gameInstance.gameId)
-                                .collection('gameStates')
-                                .doc('state');
-                            await gameStateDocRef.set(
-                                {
-                                    gameState: JSON.stringify(
-                                        gameInstance.gameState
-                                    ),
-                                },
-                                { merge: true }
-                            );
-                        } catch (e) {
-                            console.error(
-                                `Chyba pri ukladaní stavu hry ${gameInstance.gameId} po losovaní:`,
-                                e
-                            );
-                        }
-                    }
+                    await saveGameState(gameInstance, dbAdmin);
 
                     const { turnDraw } = gameInstance.gameState;
 
@@ -995,40 +1071,7 @@ export default function initializeSocket(io, dbAdmin) {
                             };
                             gameInstance.gameState.turnDrawWinner = null;
 
-                            if (dbAdmin) {
-                                const gameStateDocRef = dbAdmin
-                                    .collection('scrabbleGames')
-                                    .doc(gameInstance.gameId)
-                                    .collection('gameStates')
-                                    .doc('state');
-                                await gameStateDocRef.set(
-                                    {
-                                        gameState: JSON.stringify(
-                                            gameInstance.gameState
-                                        ),
-                                    },
-                                    { merge: true }
-                                );
-                                const gameDocRef = dbAdmin
-                                    .collection('scrabbleGames')
-                                    .doc(gameInstance.gameId);
-                                await gameDocRef.set(
-                                    {
-                                        currentPlayerIndex: startingPlayerIndex,
-                                        players: gameInstance.players
-                                        .filter((p) => p !== null)
-                                        .map((p) => ({
-                                            id: p.userId,
-                                            nickname: p.nickname,
-                                            playerIndex: p.playerIndex,
-                                            elo: p.elo,
-                                            score: gameState.playerScores[p.playerIndex],
-                                            rack: gameState.playerRacks[p.playerIndex]
-                                        })),
-                                    },
-                                    { merge: true }
-                                );
-                            }
+                            await saveGameState(gameInstance, dbAdmin);
                             startTimer(gameInstance.gameId, io);
                             io.to(gameInstance.gameId).emit(
                                 'gameStateUpdate',
@@ -1052,21 +1095,7 @@ export default function initializeSocket(io, dbAdmin) {
                         gameInstance.gameState.letterBag = finalBag;
                         gameInstance.gameState.turnDraw = { 0: null, 1: null };
 
-                        if (dbAdmin) {
-                            const gameStateDocRef = dbAdmin
-                                .collection('scrabbleGames')
-                                .doc(gameInstance.gameId)
-                                .collection('gameStates')
-                                .doc('state');
-                            await gameStateDocRef.set(
-                                {
-                                    gameState: JSON.stringify(
-                                        gameInstance.gameState
-                                    ),
-                                },
-                                { merge: true }
-                            );
-                        }
+                        await saveGameState(gameInstance, dbAdmin);
                         io.to(gameInstance.gameId).emit(
                             'gameStateUpdate',
                             gameInstance.gameState
@@ -1127,44 +1156,9 @@ export default function initializeSocket(io, dbAdmin) {
                         stopTimer(gameInstance.gameId);
 
                         // Uložíme zmenený stav hry do DB
+                        await saveGameState(gameInstance, dbAdmin);
                         if (dbAdmin) {
-                            const { gameState } = gameInstance;
                             try {
-                                const gameStateDocRef = dbAdmin
-                                    .collection('scrabbleGames')
-                                    .doc(gameInstance.gameId)
-                                    .collection('gameStates')
-                                    .doc('state');
-                                await gameStateDocRef.set(
-                                    {
-                                        gameState: JSON.stringify(
-                                            gameInstance.gameState
-                                        ),
-                                    },
-                                    { merge: true }
-                                );
-                                const gameDocRef = dbAdmin
-                                    .collection('scrabbleGames')
-                                    .doc(gameInstance.gameId);
-                                await gameDocRef.set(
-                                    {
-                                        currentPlayerIndex:
-                                            gameInstance.gameState
-                                                .currentPlayerIndex,
-                                        status: 'AWAITING_WORD_VALIDATION',
-                                        players: gameInstance.players
-                                        .filter((p) => p !== null)
-                                        .map((p) => ({
-                                            id: p.userId,
-                                            nickname: p.nickname,
-                                            playerIndex: p.playerIndex,
-                                            elo: p.elo,
-                                            score: gameState.playerScores[p.playerIndex],
-                                            rack: gameState.playerRacks[p.playerIndex]
-                                        })),
-                                    },
-                                    { merge: true }
-                                );
                                 const logEntry = {
                                     actionType: 'turn_validation_pending',
                                     playerIndex: socket.playerIndex,
@@ -1179,7 +1173,7 @@ export default function initializeSocket(io, dbAdmin) {
                                 await turnLogCollectionRef.add(logEntry);
                             } catch (e) {
                                 console.error(
-                                    `Chyba pri ukladaní stavu hry ${gameInstance.gameId} pri čakaní na schválenie:`,
+                                    `Chyba pri ukladaní logu pre hru ${gameInstance.gameId} pri čakaní na schválenie:`,
                                     e
                                 );
                             }
@@ -1196,6 +1190,7 @@ export default function initializeSocket(io, dbAdmin) {
                 case 'resolveTurnValidation': {
                     const { approved } = action.payload;
                     const { gameState } = gameInstance;
+                    let saveExtraFields = {};
                     const { pendingTurn } = gameState;
 
                     // --- Validácia ---
@@ -1245,45 +1240,18 @@ export default function initializeSocket(io, dbAdmin) {
                             timestamp: Date.now(),
                         };
                         try {
-                            // Záznam o schválení ťahu
                             const approvalLogEntry = {
                                 actionType: 'turn_approved',
                                 playerIndex: socket.playerIndex,
                                 originalPlayerIndex: pendingTurn.playerIndex,
                                 timestamp: Date.now() - 1,
                             };
-                            const approveLogRef = dbAdmin
-                                .collection('scrabbleGames')
-                                .doc(gameInstance.gameId)
-                                .collection('turnLogs');
-                            await approveLogRef.add(approvalLogEntry);
-
                             const turnLogCollectionRef = dbAdmin
                                 .collection('scrabbleGames')
                                 .doc(gameInstance.gameId)
                                 .collection('turnLogs');
+                            await turnLogCollectionRef.add(approvalLogEntry);
                             await turnLogCollectionRef.add(turnDetails);
-                            const gameDocRef = dbAdmin
-                                .collection('scrabbleGames')
-                                .doc(gameInstance.gameId);
-                            await gameDocRef.set(
-                                {
-                                    currentPlayerIndex: gameState.currentPlayerIndex,
-                                    status: 'in-progress',
-                                    players: gameInstance.players
-                                        .filter((p) => p !== null)
-                                        .map((p) => ({
-                                            id: p.userId,
-                                            nickname: p.nickname,
-                                            playerIndex: p.playerIndex,
-                                            elo: p.elo,
-                                            score: gameState.playerScores[p.playerIndex],
-                                            rack: gameState.playerRacks[p.playerIndex]
-                                        })),
-                                    scores: gameState.playerScores,
-                                },
-                                { merge: true }
-                            );
                         } catch (e) {
                             console.error(
                                 `Chyba pri ukladaní schváleného ťahu do logu:`,
@@ -1341,44 +1309,18 @@ export default function initializeSocket(io, dbAdmin) {
                                         .collection('scrabbleGames')
                                         .doc(gameInstance.gameId);
                                     const gameDoc = await gameDocRef.get();
-                                    if (
-                                        gameDoc.exists &&
-                                        gameDoc.data().gameMode ===
-                                            'competitive'
-                                    ) {
-                                        await updateEloRatings(
-                                            winner.userId,
-                                            loser.userId
-                                        );
+                                    if (gameDoc.exists && gameDoc.data().gameMode === 'competitive') {
+                                        await updateEloRatings(winner.userId, loser.userId);
                                     }
-
-                                    await gameDocRef.set(
-                                        {
-                                            status: 'finished',
-                                            endedAt: new Date(),
-                                            winnerId: winner.userId,
-                                            loserId: loser.userId,
-                                            scores: gameState.playerScores,
-                                            gameOverReason: 'standard_end',
-                                            players: gameInstance.players
-                                            .filter((p) => p !== null)
-                                            .map((p) => ({
-                                                id: p.userId,
-                                                nickname: p.nickname,
-                                                playerIndex: p.playerIndex,
-                                                elo: p.elo,
-                                                score: gameState.playerScores[p.playerIndex],
-                                                rack: gameState.playerRacks[p.playerIndex]
-                                            })),
-                                        },
-                                        { merge: true }
-                                    );
                                 } catch (e) {
-                                    console.error(
-                                        `Chyba pri finalizácii hry ${gameInstance.gameId}:`,
-                                        e
-                                    );
+                                    console.error(`Chyba pri finalizácii hry ${gameInstance.gameId}:`, e);
                                 }
+                                saveExtraFields = {
+                                    endedAt: new Date(),
+                                    winnerId: winner.userId,
+                                    loserId: loser.userId,
+                                    gameOverReason: 'standard_end',
+                                };
                             }
                         } else {
                             // HRA POKRAČUJE - bežný ťah
@@ -1436,55 +1378,14 @@ export default function initializeSocket(io, dbAdmin) {
                         }
 
                         const { playerIndex } = pendingTurn;
-
                         gameState.currentPlayerIndex = playerIndex;
-                        if (dbAdmin) {
-                            const gameDocRef = dbAdmin
-                                .collection('scrabbleGames')
-                                .doc(gameInstance.gameId);
-                            await gameDocRef.set(
-                                {
-                                    currentPlayerIndex:gameState.currentPlayerIndex,
-                                    status: 'in-progress',
-                                    players: gameInstance.players
-                                        .filter((p) => p !== null)
-                                        .map((p) => ({
-                                            id: p.userId,
-                                            nickname: p.nickname,
-                                            playerIndex: p.playerIndex,
-                                            elo: p.elo,
-                                            score: gameState.playerScores[p.playerIndex],
-                                            rack: gameState.playerRacks[p.playerIndex]
-                                        })),
-                                    scores: gameState.playerScores,
-                                },
-                                { merge: true }
-                            );
-                        }
                     }
 
                     // Vyčistíme dočasné dáta a vrátime hru do normálu
                     gameState.gameStatus = 'in_progress';
                     delete gameState.pendingTurn;
 
-                    if (dbAdmin) {
-                        try {
-                            const gameStateDocRef = dbAdmin
-                                .collection('scrabbleGames')
-                                .doc(gameInstance.gameId)
-                                .collection('gameStates')
-                                .doc('state');
-                            await gameStateDocRef.set(
-                                { gameState: JSON.stringify(gameState) },
-                                { merge: true }
-                            );
-                        } catch (e) {
-                            console.error(
-                                `Chyba pri ukladaní stavu hry ${gameInstance.gameId} po vyriešení ťahu:`,
-                                e
-                            );
-                        }
-                    }
+                    await saveGameState(gameInstance, dbAdmin, saveExtraFields);
                     startTimer(gameInstance.gameId, io);
                     io.to(gameInstance.gameId).emit(
                         'gameStateUpdate',
@@ -1501,11 +1402,6 @@ export default function initializeSocket(io, dbAdmin) {
                             ...gameInstance.gameState,
                             ...restOfPayload,
                         };
-
-                        // ZMENA: Namiesto balíka počítame písmená na doske
-                        const tilesOnBoardCount = countTilesOnBoard(
-                            gameInstance.gameState.board
-                        );
 
                         // Skontrolujeme, či hra práve skončila
                         if (
@@ -1585,57 +1481,7 @@ export default function initializeSocket(io, dbAdmin) {
                             }
                         }
 
-                        if (dbAdmin) {
-                            try {
-                                const gameStateDocRef = dbAdmin
-                                    .collection('scrabbleGames')
-                                    .doc(gameInstance.gameId)
-                                    .collection('gameStates')
-                                    .doc('state');
-                                await gameStateDocRef.set(
-                                    {
-                                        gameState: JSON.stringify(
-                                            gameInstance.gameState
-                                        ),
-                                    },
-                                    { merge: true }
-                                );
-
-                                // ZMENA: Uložíme počet položených písmen do hlavného dokumentu hry
-                                const gameDocRef = dbAdmin
-                                    .collection('scrabbleGames')
-                                    .doc(gameInstance.gameId);
-                                await gameDocRef.update({
-                                    progress: tilesOnBoardCount,
-                                    currentPlayerIndex:
-                                        gameInstance.gameState
-                                            .currentPlayerIndex,
-                                    players: gameInstance.players
-                                        .filter((p) => p !== null)
-                                        .map((p) => ({
-                                            id: p.userId,
-                                            nickname: p.nickname,
-                                            playerIndex: p.playerIndex,
-                                            elo: p.elo,
-                                            score: gameInstance.gameState
-                                                .playerScores
-                                                ? gameInstance.gameState
-                                                      .playerScores[
-                                                      p.playerIndex
-                                                  ]
-                                                : 0,
-                                            rack: gameInstance.gameState.playerRacks[p.playerIndex],
-                                        })),
-                                    scores: gameInstance.gameState
-                                        .playerScores || [0, 0],
-                                });
-                            } catch (e) {
-                                console.error(
-                                    `Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z playerAction:`,
-                                    e
-                                );
-                            }
-                        }
+                        await saveGameState(gameInstance, dbAdmin);
                         startTimer(gameInstance.gameId, io);
                         io.to(gameInstance.gameId).emit(
                             'gameStateUpdate',
@@ -1647,28 +1493,7 @@ export default function initializeSocket(io, dbAdmin) {
                     if (!gameInstance.gameState) {
                         gameInstance.gameState = generateInitialGameState();
                         gameInstance.isGameStarted = true;
-                        if (dbAdmin) {
-                            try {
-                                const gameStateDocRef = dbAdmin
-                                    .collection('scrabbleGames')
-                                    .doc(gameInstance.gameId)
-                                    .collection('gameStates')
-                                    .doc('state');
-                                await gameStateDocRef.set(
-                                    {
-                                        gameState: JSON.stringify(
-                                            gameInstance.gameState
-                                        ),
-                                    },
-                                    { merge: true }
-                                );
-                            } catch (e) {
-                                console.error(
-                                    `Chyba pri ukladaní inicializovaného stavu hry ${gameInstance.gameId} do Firestore:`,
-                                    e
-                                );
-                            }
-                        }
+                        await saveGameState(gameInstance, dbAdmin);
                         io.to(gameInstance.gameId).emit(
                             'gameStateUpdate',
                             gameInstance.gameState
@@ -1744,28 +1569,7 @@ export default function initializeSocket(io, dbAdmin) {
                                 ...gameInstance.gameState,
                                 board: newBoard,
                             };
-                            if (dbAdmin) {
-                                try {
-                                    const gameStateDocRef = dbAdmin
-                                        .collection('scrabbleGames')
-                                        .doc(gameInstance.gameId)
-                                        .collection('gameStates')
-                                        .doc('state');
-                                    await gameStateDocRef.set(
-                                        {
-                                            gameState: JSON.stringify(
-                                                gameInstance.gameState
-                                            ),
-                                        },
-                                        { merge: true }
-                                    );
-                                } catch (e) {
-                                    console.error(
-                                        `Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore po priradení žolíka:`,
-                                        e
-                                    );
-                                }
-                            }
+                            await saveGameState(gameInstance, dbAdmin);
                             const playerNicknamesMap = {};
                             gameInstance.players.forEach((p) => {
                                 if (p) {
@@ -1888,41 +1692,12 @@ export default function initializeSocket(io, dbAdmin) {
                         gameInstance.gameState.isGameOver = true;
                         gameInstance.gameState.gameOverReason = `${loser.nickname} sa vzdal(a).`;
 
-                        // Aktualizujeme hlavný dokument hry vo Firestore
-                        if (dbAdmin) {
-                            const { gameState } = gameInstance;
-                            try {
-                                const gameDocRef = dbAdmin
-                                    .collection('scrabbleGames')
-                                    .doc(gameInstance.gameId);
-                                await gameDocRef.set(
-                                    {
-                                        status: 'finished',
-                                        endedAt: new Date(),
-                                        winnerId: winner.userId,
-                                        loserId: loser.userId,
-                                        gameOverReason: 'surrender',
-                                        scores: gameInstance.gameState.playerScores,
-                                        players: gameInstance.players
-                                        .filter((p) => p !== null)
-                                        .map((p) => ({
-                                            id: p.userId,
-                                            nickname: p.nickname,
-                                            playerIndex: p.playerIndex,
-                                            elo: p.elo,
-                                            score: gameState.playerScores[p.playerIndex],
-                                            rack: gameState.playerRacks[p.playerIndex]
-                                        })),
-                                    },
-                                    { merge: true }
-                                );
-                            } catch (e) {
-                                console.error(
-                                    `Chyba pri aktualizácii stavu hry ${gameInstance.gameId} na 'finished' po vzdaní sa:`,
-                                    e
-                                );
-                            }
-                        }
+                        await saveGameState(gameInstance, dbAdmin, {
+                            endedAt: new Date(),
+                            winnerId: winner.userId,
+                            loserId: loser.userId,
+                            gameOverReason: 'surrender',
+                        });
 
                         // Odošleme finálny stav hry všetkým v miestnosti
                         io.to(gameInstance.gameId).emit(
@@ -1997,27 +1772,12 @@ export default function initializeSocket(io, dbAdmin) {
                     gameInstance.gameState.playerScores = finalScores;
                     gameInstance.gameState.winnerIndex = winnerIndex;
 
-                    if (dbAdmin) {
-                        const { gameState } = gameInstance;
-                        const gameDocRef = dbAdmin
-                            .collection('scrabbleGames')
-                            .doc(gameInstance.gameId);
-                        await gameDocRef.update({
-                            status: 'finished',
-                            endedAt: new Date(),
-                            scores: finalScores,
-                            players: gameInstance.players
-                            .filter((p) => p !== null)
-                            .map((p) => ({
-                                id: p.userId,
-                                nickname: p.nickname,
-                                playerIndex: p.playerIndex,
-                                elo: p.elo,
-                                score: gameState.playerScores[p.playerIndex],
-                                rack: gameState.playerRacks[p.playerIndex]
-                            })),
-                        });
-                    }
+                    await saveGameState(gameInstance, dbAdmin, {
+                        endedAt: new Date(),
+                        winnerId: winnerId || null,
+                        loserId: loserId || null,
+                        gameOverReason: reason,
+                    });
 
                     // 4. Pošleme finálny stav všetkým klientom
                     io.to(gameInstance.gameId).emit(
