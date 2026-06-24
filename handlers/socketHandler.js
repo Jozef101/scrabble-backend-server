@@ -1736,12 +1736,6 @@ export default function initializeSocket(io, dbAdmin) {
                             error
                         );
                     }
-                    if (gameInstance.gameState) {
-                        io.to(gameInstance.gameId).emit(
-                            'gameStateUpdate',
-                            gameInstance.gameState
-                        );
-                    }
                     break;
                 case 'surrender':
                     if (
