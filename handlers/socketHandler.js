@@ -11,6 +11,39 @@ import { drawLetters } from '../utils/gameUtils.js';
 import { LETTER_VALUES } from '../config/constants.js';
 import { dbAdmin } from '../config/firebase.js';
 
+const BOARD_COLS = 'ABCDEFGHIJKLMNO';
+
+/**
+ * Konvertuje internú 2D dosku (board[x][y]) na Firestore objekt s chess kľúčmi (A1–O15).
+ * Ukladajú sa len obsadené políčka.
+ */
+function boardToFirestore(board) {
+    const result = {};
+    for (let x = 0; x < board.length; x++) {
+        for (let y = 0; y < board[x].length; y++) {
+            if (board[x][y] !== null) {
+                result[`${BOARD_COLS[y]}${x + 1}`] = board[x][y];
+            }
+        }
+    }
+    return result;
+}
+
+/**
+ * Konvertuje Firestore chess objekt (A1–O15) späť na internú 2D dosku.
+ */
+function firestoreToBoard(boardObj, size = 15) {
+    const board = Array(size).fill(null).map(() => Array(size).fill(null));
+    for (const [key, value] of Object.entries(boardObj || {})) {
+        const y = BOARD_COLS.indexOf(key[0]);
+        const x = parseInt(key.slice(1)) - 1;
+        if (y !== -1 && x >= 0 && x < size) {
+            board[x][y] = value;
+        }
+    }
+    return board;
+}
+
 /**
  * Uloží kompletný stav hry ako štruktúrované polia do hlavného dokumentu scrabbleGames/{gameId}.
  * @param {object} gameInstance - Aktuálna inštancia hry.
@@ -40,8 +73,8 @@ async function saveGameState(gameInstance, db, extraFields = {}) {
 
     try {
         await db.collection('scrabbleGames').doc(gameInstance.gameId).set({
-            board: gameState.board,
-            boardAtStartOfTurn: gameState.boardAtStartOfTurn,
+            board: boardToFirestore(gameState.board),
+            boardAtStartOfTurn: boardToFirestore(gameState.boardAtStartOfTurn),
             letterBag: gameState.letterBag,
             playerRacks: gameState.playerRacks,
             playerScores: gameState.playerScores,
@@ -85,9 +118,16 @@ async function loadGameState(gameId, db) {
 
         if (data.board !== undefined) {
             // Nový formát — štruktúrované polia v hlavnom dokumente
+            // board môže byť chess objekt (A1–O15) alebo starší nested array
+            const boardToLoad = Array.isArray(data.board)
+                ? data.board
+                : firestoreToBoard(data.board);
+            const boardAtStartToLoad = Array.isArray(data.boardAtStartOfTurn)
+                ? data.boardAtStartOfTurn
+                : firestoreToBoard(data.boardAtStartOfTurn);
             return {
-                board: data.board,
-                boardAtStartOfTurn: data.boardAtStartOfTurn,
+                board: boardToLoad,
+                boardAtStartOfTurn: boardAtStartToLoad,
                 letterBag: data.letterBag,
                 playerRacks: data.playerRacks,
                 playerScores: data.playerScores,
