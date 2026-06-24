@@ -76,7 +76,8 @@ async function saveGameState(gameInstance, db, extraFields = {}) {
             board: boardToFirestore(gameState.board),
             boardAtStartOfTurn: boardToFirestore(gameState.boardAtStartOfTurn),
             letterBag: gameState.letterBag,
-            playerRacks: gameState.playerRacks,
+            playerRack0: gameState.playerRacks[0] ?? [],
+            playerRack1: gameState.playerRacks[1] ?? [],
             playerScores: gameState.playerScores,
             scores: gameState.playerScores,
             playerTimes: gameState.playerTimes ?? null,
@@ -129,7 +130,9 @@ async function loadGameState(gameId, db) {
                 board: boardToLoad,
                 boardAtStartOfTurn: boardAtStartToLoad,
                 letterBag: data.letterBag,
-                playerRacks: data.playerRacks,
+                playerRacks: data.playerRack0 !== undefined
+                    ? [data.playerRack0, data.playerRack1 ?? []]
+                    : (data.playerRacks ?? [[], []]),
                 playerScores: data.playerScores,
                 playerTimes: data.playerTimes ?? null,
                 currentPlayerIndex: data.currentPlayerIndex,
