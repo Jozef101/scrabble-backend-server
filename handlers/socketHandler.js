@@ -254,6 +254,22 @@ async function calculateAndLogFinalScores(gameInstance, dbAdmin, details) {
     }
 }
 
+/**
+ * Vráti políčka, ktoré boli počas aktuálneho ťahu položené na dosku (diff oproti boardAtStartOfTurn).
+ * Každý záznam obsahuje { x, y, id, letter, ... } (skopírované z obsahu políčka).
+ */
+function getPlacedLettersFromBoardDiff(board, boardAtStartOfTurn) {
+    const placed = [];
+    for (let x = 0; x < board.length; x++) {
+        for (let y = 0; y < board[x].length; y++) {
+            if (board[x][y] !== null && boardAtStartOfTurn[x][y] === null) {
+                placed.push({ x, y, ...board[x][y] });
+            }
+        }
+    }
+    return placed;
+}
+
 // NOVÁ FUNKCIA: Počíta, koľko políčok na doske obsahuje písmeno
 const countTilesOnBoard = (board) => {
     let count = 0;
@@ -916,8 +932,6 @@ export default function initializeSocket(io, dbAdmin) {
 
             if (
                 gameInstance.gameState &&
-                action.type !== 'updateGameState' &&
-                action.type !== 'assignJoker' &&
                 action.type !== 'chatMessage' &&
                 action.type !== 'turnSubmitted' &&
                 action.type !== 'drawForTurn' &&
@@ -1299,18 +1313,23 @@ export default function initializeSocket(io, dbAdmin) {
                             );
                         }
 
-                        const numToDraw = placedLetters.length;
+                        // Počet písmen na doplnenie počítame zo servera (nie z klienta)
+                        const serverPlaced = getPlacedLettersFromBoardDiff(
+                            gameState.board,
+                            gameState.boardAtStartOfTurn
+                        );
+                        const numToDraw = serverPlaced.length;
                         const { drawnLetters, remainingBag, bagEmpty } =
                             drawLetters(gameState.letterBag, numToDraw);
 
-                        let currentRack = gameState.playerRacks[
-                            playerIndex
-                        ].filter(
+                        // Filter racku použije server-side IDs aj klientske IDs (dvojitá ochrana)
+                        const serverPlacedIds = new Set(serverPlaced.map(p => p.id));
+                        const clientPlacedIds = new Set(placedLetters.map(p => p.letterData?.id).filter(Boolean));
+                        let currentRack = gameState.playerRacks[playerIndex].filter(
                             (l) =>
                                 l !== null &&
-                                !placedLetters.some(
-                                    (p) => p.letterData.id === l.id
-                                )
+                                !serverPlacedIds.has(l.id) &&
+                                !clientPlacedIds.has(l.id)
                         );
                         let newRack = [...currentRack, ...drawnLetters];
 
@@ -1367,6 +1386,7 @@ export default function initializeSocket(io, dbAdmin) {
                             while (newRack.length < 7) {
                                 newRack.push(null);
                             }
+                            newRack = newRack.slice(0, 7); // Bezpečnostná poistka — rack nikdy nebude > 7
                             gameState.playerRacks[playerIndex] = newRack;
 
                             gameState.letterBag = remainingBag;
@@ -1379,11 +1399,9 @@ export default function initializeSocket(io, dbAdmin) {
                             gameState.hasPlacedOnBoardThisTurn = false;
                             gameState.hasMovedToExchangeZoneThisTurn = false;
                             gameState.exchangeZoneLetters = [];
-                            const newHighlightedLetters = placedLetters.map(
-                                (letter) => ({ x: letter.x, y: letter.y })
+                            gameState.highlightedLetters = serverPlaced.map(
+                                (p) => ({ x: p.x, y: p.y })
                             );
-                            gameState.highlightedLetters =
-                                newHighlightedLetters;
                         }
                     } else {
                         // --- ŤAH ZAMIETNUTÝ ---
@@ -1436,34 +1454,93 @@ export default function initializeSocket(io, dbAdmin) {
                 }
                 case 'updateGameState':
                     if (gameInstance.gameState) {
-                        const { lastTurnInfo, ...restOfPayload } =
-                            action.payload;
+                        const { lastTurnInfo, ...restOfPayload } = action.payload;
+
+                        // Zachytíme stav PRED mergom — slúži na server-side výpočet racku a bagu
+                        const prevState = gameInstance.gameState;
+                        const prevPlayerIndex = prevState.currentPlayerIndex;
+
+                        // Mergujeme nedôveryhodné polia z frontendu (skóre, board, flagy...)
                         gameInstance.gameState = {
-                            ...gameInstance.gameState,
+                            ...prevState,
                             ...restOfPayload,
                         };
 
-                        // Skontrolujeme, či hra práve skončila
+                        // --- SERVER-SIDE SPRÁVA RACKU A BAGU ---
+                        // Server sám vypočíta nový rack a bag, bez ohľadu na to, čo poslal klient.
+
+                        if (prevState.hasPlacedOnBoardThisTurn) {
+                            // Ťah s položenými písmenami: diff dosky určí, koľko písmen doplniť
+                            const placed = getPlacedLettersFromBoardDiff(
+                                prevState.board,
+                                prevState.boardAtStartOfTurn
+                            );
+                            const placedIds = new Set(placed.map(p => p.id));
+                            const { drawnLetters, remainingBag, bagEmpty } =
+                                drawLetters(prevState.letterBag, placed.length);
+
+                            let rack = (prevState.playerRacks[prevPlayerIndex] || [])
+                                .filter(l => l !== null && !placedIds.has(l.id));
+                            rack = [...rack, ...drawnLetters];
+                            while (rack.length < 7) rack.push(null);
+                            rack = rack.slice(0, 7);
+
+                            gameInstance.gameState.playerRacks = prevState.playerRacks.map(
+                                (r, i) => i === prevPlayerIndex ? rack : r
+                            );
+                            gameInstance.gameState.letterBag = remainingBag;
+                            gameInstance.gameState.isBagEmpty = bagEmpty;
+                            // Highlights zo serverového diffu (nie z klienta)
+                            gameInstance.gameState.highlightedLetters = placed.map(p => ({ x: p.x, y: p.y }));
+
+                        } else if (prevState.hasMovedToExchangeZoneThisTurn) {
+                            // Výmena písmen: server pozná exchangeZoneLetters pred vymazaním
+                            const exchanged = prevState.exchangeZoneLetters;
+                            const { drawnLetters, remainingBag } =
+                                drawLetters(prevState.letterBag, exchanged.length);
+
+                            let bag = [...remainingBag, ...exchanged];
+                            for (let i = bag.length - 1; i > 0; i--) {
+                                const j = Math.floor(Math.random() * (i + 1));
+                                [bag[i], bag[j]] = [bag[j], bag[i]];
+                            }
+
+                            const exchangedIds = new Set(exchanged.map(e => e.id));
+                            let rack = (prevState.playerRacks[prevPlayerIndex] || [])
+                                .filter(l => l !== null && !exchangedIds.has(l.id));
+                            rack = [...rack, ...drawnLetters];
+                            while (rack.length < 7) rack.push(null);
+                            rack = rack.slice(0, 7);
+
+                            gameInstance.gameState.playerRacks = prevState.playerRacks.map(
+                                (r, i) => i === prevPlayerIndex ? rack : r
+                            );
+                            gameInstance.gameState.letterBag = bag;
+                            gameInstance.gameState.isBagEmpty = bag.length === 0;
+
+                        } else {
+                            // Pasovanie: rack ani bag sa nemenia — server zachová svoje hodnoty
+                            gameInstance.gameState.playerRacks = prevState.playerRacks;
+                            gameInstance.gameState.letterBag = prevState.letterBag;
+                            gameInstance.gameState.isBagEmpty = prevState.isBagEmpty;
+                        }
+
+                        // Skontrolujeme, či hra práve skončila (záchranná sieť pre staré cesty)
                         if (
-                            !gameInstance.gameState.isGameOver &&
-                            action.payload &&
-                            action.payload.isGameOver
+                            !prevState.isGameOver &&
+                            action.payload?.isGameOver
                         ) {
                             console.log(
                                 `Hra ${gameInstance.gameId} skončila. Vypočítavam finálne skóre a vytváram záznam.`
                             );
 
-                            // Zistíme, či hru niekto ukončil minutím všetkých písmen.
-                            // Pozeráme sa na stav rackov, ktorý nám poslal klient v payloade.
                             const finishingPlayerIndex =
-                                action.payload.playerRacks[
-                                    action.payload.currentPlayerIndex
-                                ].every((l) => l === null)
-                                    ? action.payload.currentPlayerIndex
+                                gameInstance.gameState.playerRacks[prevPlayerIndex]?.every(
+                                    (l) => l === null
+                                )
+                                    ? prevPlayerIndex
                                     : null;
 
-                            // Zavoláme našu novú funkciu na výpočet a zalogovanie.
-                            // Ona sa už postará o výpočet skóre, uloženie logu a aktualizáciu gameState.
                             await calculateAndLogFinalScores(
                                 gameInstance,
                                 dbAdmin,
@@ -1476,7 +1553,6 @@ export default function initializeSocket(io, dbAdmin) {
                                 }
                             );
 
-                            // AŽ PO VÝPOČTE FINÁLNEHO SKÓRE RIEŠIME ELO.
                             try {
                                 const gameDocRef = dbAdmin
                                     .collection('scrabbleGames')
@@ -1486,7 +1562,6 @@ export default function initializeSocket(io, dbAdmin) {
                                     gameDoc.exists &&
                                     gameDoc.data().gameMode === 'competitive'
                                 ) {
-                                    // Použijeme finálne skóre, ktoré vypočítal a uložil náš server
                                     const finalScores =
                                         gameInstance.gameState.playerScores;
                                     const player1 = gameInstance.players.find(
@@ -1497,7 +1572,6 @@ export default function initializeSocket(io, dbAdmin) {
                                     );
 
                                     if (player1 && player2) {
-                                        // Ochrana pre prípad, že by hráč neexistoval
                                         if (finalScores[0] > finalScores[1]) {
                                             await updateEloRatings(
                                                 player1.userId,
