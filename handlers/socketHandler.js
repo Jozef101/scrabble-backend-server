@@ -968,16 +968,6 @@ export default function initializeSocket(io, dbAdmin) {
 
             switch (action.type) {
                 case 'drawForTurn': {
-                    // --- KROK 1: NOVÁ VALIDÁCIA ---
-                    // Skontrolujeme, či sú v hre obaja hráči (či nie sú ich sloty null)
-                    if (!gameInstance.players[0] || !gameInstance.players[1]) {
-                        return socket.emit(
-                            'gameError',
-                            'Losovať je možné až po pripojení oboch hráčov do hry.'
-                        );
-                    }
-
-                    // Pôvodná validácia (zostáva)
                     if (
                         gameInstance.gameState.gameStatus !== 'drawing_for_turn'
                     ) {
