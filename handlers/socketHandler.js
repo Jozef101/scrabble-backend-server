@@ -65,10 +65,13 @@ async function saveGameState(gameInstance, db, extraFields = {}) {
             rack: gameState.playerRacks[p.playerIndex],
         }));
 
+    const connectedPlayerCount = gameInstance.players.filter(p => p !== null).length;
     const firestoreStatus = gameState.isGameOver
         ? 'finished'
         : gameState.gameStatus === 'AWAITING_WORD_VALIDATION'
         ? 'AWAITING_WORD_VALIDATION'
+        : connectedPlayerCount < 2
+        ? 'waiting'
         : 'in-progress';
 
     try {
