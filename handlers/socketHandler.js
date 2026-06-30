@@ -1,4 +1,4 @@
-//backend/handlers/socketHandler.js
+﻿//backend/handlers/socketHandler.js
 import {
     games,
     gameTimeouts,
@@ -42,6 +42,34 @@ function firestoreToBoard(boardObj, size = 15) {
         }
     }
     return board;
+}
+
+/**
+ * Vráti kópiu stavu hry kde súperov rack má skryté písmená (zachováva počet dlaždíc).
+ */
+function maskStateForPlayer(gameState, playerIndex) {
+    if (playerIndex === null || playerIndex === undefined || !gameState.playerRacks) {
+        return gameState;
+    }
+    const opponentIndex = 1 - playerIndex;
+    const maskedRacks = gameState.playerRacks.map((rack, idx) => {
+        if (idx === opponentIndex && rack) {
+            return rack.map(letter => (letter !== null ? { hidden: true } : null));
+        }
+        return rack;
+    });
+    return { ...gameState, playerRacks: maskedRacks };
+}
+
+/**
+ * Emituje gameStateUpdate každému pripojenému hráčovi s jeho personalizovaným stavom.
+ */
+function emitGameStateToAll(io, gameInstance) {
+    gameInstance.players.forEach((player, idx) => {
+        if (player && player.socketId) {
+            io.to(player.socketId).emit('gameStateUpdate', maskStateForPlayer(gameInstance.gameState, idx));
+        }
+    });
 }
 
 /**
@@ -479,7 +507,7 @@ async function handleTimeTick(gameId, io) {
             gameState.gameOverReason = `Hráčovi ${
                 loser.nickname || loserIndex + 1
             } vypršal čas.`;
-            io.to(gameId).emit('gameStateUpdate', gameState);
+            emitGameStateToAll(io, gameInstance);
             return;
         }
     } // Pošleme aktualizáciu o čase všetkým hráčom v miestnosti
@@ -778,8 +806,8 @@ export default function initializeSocket(io, dbAdmin) {
                     gameInstance.gameState.playerNicknames = playerNicknamesMap;
                     gameInstance.gameState.players = gameInstance.players;
 
-                    // io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
-                    socket.emit('gameStateUpdate', gameInstance.gameState);
+                    // emitGameStateToAll(io, gameInstance);
+                    socket.emit('gameStateUpdate', maskStateForPlayer(gameInstance.gameState, socket.playerIndex));
 
                     // Načítanie a odoslanie chatovej histórie
                     try {
@@ -867,8 +895,8 @@ export default function initializeSocket(io, dbAdmin) {
                     gameInstance.gameState.gameMode = 'competitive';
                 }
 
-                // io.to(gameInstance.gameId).emit('gameStateUpdate', gameInstance.gameState);
-                socket.emit('gameStateUpdate', gameInstance.gameState);
+                // emitGameStateToAll(io, gameInstance);
+                socket.emit('gameStateUpdate', maskStateForPlayer(gameInstance.gameState, socket.playerIndex));
                 const connectedPlayersCount = gameInstance.players.filter(
                     (p) => p !== null && p.socketId !== null
                 ).length;
@@ -1012,10 +1040,7 @@ export default function initializeSocket(io, dbAdmin) {
 
                     // Ak ešte nelosoval druhý hráč, len pošleme update a čakáme.
                     if (!turnDraw[0] || !turnDraw[1]) {
-                        io.to(gameInstance.gameId).emit(
-                            'gameStateUpdate',
-                            gameInstance.gameState
-                        );
+                        emitGameStateToAll(io, gameInstance);
                         break;
                     }
 
@@ -1038,10 +1063,7 @@ export default function initializeSocket(io, dbAdmin) {
                         gameInstance.gameState.gameStatus = 'turn_draw_reveal';
                         gameInstance.gameState.turnDrawWinner =
                             startingPlayerIndex;
-                        io.to(gameInstance.gameId).emit(
-                            'gameStateUpdate',
-                            gameInstance.gameState
-                        ); // Pošleme výsledok
+                        emitGameStateToAll(io, gameInstance); // Pošleme výsledok
 
                         setTimeout(async () => {
                             // --- INICIALIZÁCIA ČASOVAČA ---
@@ -1123,10 +1145,7 @@ export default function initializeSocket(io, dbAdmin) {
 
                             await saveGameState(gameInstance, dbAdmin);
                             startTimer(gameInstance.gameId, io);
-                            io.to(gameInstance.gameId).emit(
-                                'gameStateUpdate',
-                                gameInstance.gameState
-                            ); // Spustíme hru
+                            emitGameStateToAll(io, gameInstance); // Spustíme hru
                         }, 4000);
                     } else {
                         // REMÍZA
@@ -1146,10 +1165,7 @@ export default function initializeSocket(io, dbAdmin) {
                         gameInstance.gameState.turnDraw = { 0: null, 1: null };
 
                         await saveGameState(gameInstance, dbAdmin);
-                        io.to(gameInstance.gameId).emit(
-                            'gameStateUpdate',
-                            gameInstance.gameState
-                        );
+                        emitGameStateToAll(io, gameInstance);
                     }
                     break;
                 }
@@ -1230,10 +1246,7 @@ export default function initializeSocket(io, dbAdmin) {
                         }
 
                         // Rozošleme všetkým hráčom nový stav
-                        io.to(gameInstance.gameId).emit(
-                            'gameStateUpdate',
-                            gameInstance.gameState
-                        );
+                        emitGameStateToAll(io, gameInstance);
                     }
                     break;
                 }
@@ -1441,10 +1454,7 @@ export default function initializeSocket(io, dbAdmin) {
 
                     await saveGameState(gameInstance, dbAdmin, saveExtraFields);
                     startTimer(gameInstance.gameId, io);
-                    io.to(gameInstance.gameId).emit(
-                        'gameStateUpdate',
-                        gameState
-                    );
+                    emitGameStateToAll(io, gameInstance);
 
                     break;
                 }
@@ -1593,10 +1603,7 @@ export default function initializeSocket(io, dbAdmin) {
 
                         await saveGameState(gameInstance, dbAdmin);
                         startTimer(gameInstance.gameId, io);
-                        io.to(gameInstance.gameId).emit(
-                            'gameStateUpdate',
-                            gameInstance.gameState
-                        );
+                        emitGameStateToAll(io, gameInstance);
                     }
                     break;
                 case 'initializeGame':
@@ -1604,10 +1611,7 @@ export default function initializeSocket(io, dbAdmin) {
                         gameInstance.gameState = generateInitialGameState();
                         gameInstance.isGameStarted = true;
                         await saveGameState(gameInstance, dbAdmin);
-                        io.to(gameInstance.gameId).emit(
-                            'gameStateUpdate',
-                            gameInstance.gameState
-                        );
+                        emitGameStateToAll(io, gameInstance);
                     }
                     break;
                 case 'chatMessage':
@@ -1692,10 +1696,7 @@ export default function initializeSocket(io, dbAdmin) {
                                 playerNicknamesMap;
                             gameInstance.gameState.players =
                                 gameInstance.players;
-                            io.to(gameInstance.gameId).emit(
-                                'gameStateUpdate',
-                                gameInstance.gameState
-                            );
+                            emitGameStateToAll(io, gameInstance);
                         }
                     }
                     break;
@@ -1804,10 +1805,7 @@ export default function initializeSocket(io, dbAdmin) {
                         });
 
                         // Odošleme finálny stav hry všetkým v miestnosti
-                        io.to(gameInstance.gameId).emit(
-                            'gameStateUpdate',
-                            gameInstance.gameState
-                        );
+                        emitGameStateToAll(io, gameInstance);
                     }
                     break;
                 case 'gameOver': {
@@ -1884,10 +1882,7 @@ export default function initializeSocket(io, dbAdmin) {
                     });
 
                     // 4. Pošleme finálny stav všetkým klientom
-                    io.to(gameInstance.gameId).emit(
-                        'gameStateUpdate',
-                        gameInstance.gameState
-                    );
+                    emitGameStateToAll(io, gameInstance);
                     break;
                 }
                 default:
