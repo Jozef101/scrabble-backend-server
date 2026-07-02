@@ -1234,6 +1234,49 @@ export default function initializeSocket(io, dbAdmin) {
                         });
                     }
                     break;
+                case 'returnAllToRack': {
+                    const { gameState } = gameInstance;
+                    if (!gameState) break;
+
+                    const newBoard = gameState.board.map(row => [...row]);
+                    const newRack = [...(gameState.playerRacks[socket.playerIndex] || [])];
+                    let changed = false;
+
+                    for (let x = 0; x < newBoard.length; x++) {
+                        for (let y = 0; y < newBoard[x].length; y++) {
+                            if (newBoard[x][y] !== null && gameState.boardAtStartOfTurn[x][y] === null) {
+                                const slot = newRack.findIndex(s => s === null);
+                                if (slot !== -1) {
+                                    newRack[slot] = newBoard[x][y];
+                                    newBoard[x][y] = null;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+
+                    for (const letter of gameState.exchangeZoneLetters) {
+                        const slot = newRack.findIndex(s => s === null);
+                        if (slot !== -1) {
+                            newRack[slot] = letter;
+                            changed = true;
+                        }
+                    }
+
+                    if (!changed) break;
+
+                    gameInstance.gameState = {
+                        ...gameState,
+                        board: newBoard,
+                        playerRacks: gameState.playerRacks.map((r, i) => i === socket.playerIndex ? newRack : r),
+                        exchangeZoneLetters: [],
+                        hasPlacedOnBoardThisTurn: false,
+                        hasMovedToExchangeZoneThisTurn: false,
+                    };
+
+                    emitGameStateToAll(io, gameInstance);
+                    break;
+                }
                 case 'submitTurnForApproval': {
                     if (gameInstance.gameState) {
                         // Získame všetky dáta z payloadu
