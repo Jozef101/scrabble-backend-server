@@ -45,20 +45,60 @@ function firestoreToBoard(boardObj, size = 15) {
 }
 
 /**
- * Vráti kópiu stavu hry kde súperov rack má skryté písmená (zachováva počet dlaždíc).
+ * Vráti kópiu stavu hry prispôsobenú pre daného hráča:
+ * - súperov rack má skryté písmená
+ * - ak je rad súpera a hra prebieha, hráč nevidí dočasne položené písmená (board diff + exchangeZone)
+ *   ani zmeny v počte písmen v súperovom racku
  */
 function maskStateForPlayer(gameState, playerIndex) {
     if (playerIndex === null || playerIndex === undefined || !gameState.playerRacks) {
         return gameState;
     }
     const opponentIndex = 1 - playerIndex;
-    const maskedRacks = gameState.playerRacks.map((rack, idx) => {
-        if (idx === opponentIndex && rack) {
-            return rack.map(letter => (letter !== null ? { hidden: true } : null));
+
+    // Počas ťahu súpera (in_progress) skryjeme jeho rozložené písmená na doske a vo výmennej zóne.
+    // Počas AWAITING_WORD_VALIDATION ich naopak ukázať musíme, aby druhý hráč mohol schváliť/zamietnuť.
+    const opponentIsPlaying =
+        gameState.gameStatus === 'in_progress' &&
+        gameState.currentPlayerIndex === opponentIndex &&
+        gameState.boardAtStartOfTurn;
+
+    // Ak súper práve hrá, spočítame koľko písmen presunul z racku (board diff + exchange zone)
+    // a doplníme ich späť do jeho maskovaného racku ako { hidden: true }
+    let movedFromRack = 0;
+    if (opponentIsPlaying) {
+        for (let x = 0; x < gameState.board.length; x++) {
+            for (let y = 0; y < gameState.board[x].length; y++) {
+                if (gameState.board[x][y] !== null && gameState.boardAtStartOfTurn[x][y] === null) {
+                    movedFromRack++;
+                }
+            }
         }
-        return rack;
+        movedFromRack += gameState.exchangeZoneLetters.length;
+    }
+
+    const maskedRacks = gameState.playerRacks.map((rack, idx) => {
+        if (idx !== opponentIndex || !rack) return rack;
+        let nullsToFill = movedFromRack;
+        return rack.map(letter => {
+            if (letter !== null) return { hidden: true };
+            // Doplníme prázdny slot ak tam súper presunul písmeno
+            if (nullsToFill > 0) {
+                nullsToFill--;
+                return { hidden: true };
+            }
+            return null;
+        });
     });
-    return { ...gameState, playerRacks: maskedRacks };
+
+    return {
+        ...gameState,
+        playerRacks: maskedRacks,
+        board: opponentIsPlaying ? gameState.boardAtStartOfTurn.map(row => [...row]) : gameState.board,
+        exchangeZoneLetters: opponentIsPlaying ? [] : gameState.exchangeZoneLetters,
+        hasPlacedOnBoardThisTurn: opponentIsPlaying ? false : gameState.hasPlacedOnBoardThisTurn,
+        hasMovedToExchangeZoneThisTurn: opponentIsPlaying ? false : gameState.hasMovedToExchangeZoneThisTurn,
+    };
 }
 
 /**
@@ -1188,7 +1228,7 @@ export default function initializeSocket(io, dbAdmin) {
                         //         console.error(`Chyba pri ukladaní stavu hry ${gameInstance.gameId} do Firestore z akcie moveLetter:`, e);
                         //     }
                         // }
-                        io.to(gameInstance.gameId).emit('moveLetter', {
+                        socket.emit('moveLetter', {
                             ...action.payload,
                             playerIndex: socket.playerIndex,
                         });
