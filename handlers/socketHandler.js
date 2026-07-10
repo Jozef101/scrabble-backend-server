@@ -1405,25 +1405,30 @@ export default function initializeSocket(io, dbAdmin) {
                             );
                         }
 
-                        // Počet písmen na doplnenie počítame zo servera (nie z klienta)
+                        // Počet položených písmen zo servera (nie z klienta)
                         const serverPlaced = getPlacedLettersFromBoardDiff(
                             gameState.board,
                             gameState.boardAtStartOfTurn
                         );
-                        const numToDraw = serverPlaced.length;
-                        const { drawnLetters, remainingBag, bagEmpty } =
-                            drawLetters(gameState.letterBag, numToDraw);
-
                         // Filter racku použije server-side IDs aj klientske IDs (dvojitá ochrana)
                         const serverPlacedIds = new Set(serverPlaced.map(p => p.id));
                         const clientPlacedIds = new Set(placedLetters.map(p => p.letterData?.id).filter(Boolean));
-                        let currentRack = gameState.playerRacks[playerIndex].filter(
+                        // Exchange zona môže mať písmená ak frontend pustil confirm pri stale stave — vrátime ich do racku
+                        const exchangeInFlightValidation = gameState.exchangeZoneLetters || [];
+                        const exchangeIdsValidation = new Set(exchangeInFlightValidation.map(l => l.id));
+                        const remainingValidation = gameState.playerRacks[playerIndex].filter(
                             (l) =>
                                 l !== null &&
                                 !serverPlacedIds.has(l.id) &&
-                                !clientPlacedIds.has(l.id)
+                                !clientPlacedIds.has(l.id) &&
+                                !exchangeIdsValidation.has(l.id)
                         );
-                        let newRack = [...currentRack, ...drawnLetters];
+                        const availableValidation = [...remainingValidation, ...exchangeInFlightValidation];
+                        // Dokreslíme presne toľko, aby bol rack plný (max 7)
+                        const numToDrawValidation = Math.max(0, Math.min(7 - availableValidation.length, gameState.letterBag.length));
+                        const { drawnLetters, remainingBag, bagEmpty } =
+                            drawLetters(gameState.letterBag, numToDrawValidation);
+                        let newRack = [...availableValidation, ...drawnLetters];
 
                         // --- NOVÁ KONTROLA KONCA HRY ---
                         if (bagEmpty && newRack.length === 0) {
@@ -1559,26 +1564,53 @@ export default function initializeSocket(io, dbAdmin) {
                         // Server sám vypočíta nový rack a bag, bez ohľadu na to, čo poslal klient.
 
                         if (prevState.hasPlacedOnBoardThisTurn) {
-                            // Ťah s položenými písmenami: diff dosky určí, koľko písmen doplniť
+                            // Ťah s položenými písmenami
                             const placed = getPlacedLettersFromBoardDiff(
                                 prevState.board,
                                 prevState.boardAtStartOfTurn
                             );
                             const placedIds = new Set(placed.map(p => p.id));
-                            const { drawnLetters, remainingBag, bagEmpty } =
-                                drawLetters(prevState.letterBag, placed.length);
+                            // Písmená v exchange zóne (mohli sa tam dostať pri stale-state race condition)
+                            // — vrátime ich do racku, nie stratíme
+                            const exchangeInFlight = prevState.exchangeZoneLetters || [];
+                            const exchangeIds = new Set(exchangeInFlight.map(l => l.id));
 
-                            let rack = (prevState.playerRacks[prevPlayerIndex] || [])
-                                .filter(l => l !== null && !placedIds.has(l.id));
-                            rack = [...rack, ...drawnLetters];
+                            const rackBeforeFilter = prevState.playerRacks[prevPlayerIndex] || [];
+                            // Zostatky z racku (bez položených a bez exchange)
+                            const remaining = rackBeforeFilter.filter(
+                                l => l !== null && !placedIds.has(l.id) && !exchangeIds.has(l.id)
+                            );
+                            // Exchange písmená sa vracajú do racku
+                            const availableNow = [...remaining, ...exchangeInFlight];
+
+                            // Dokreslíme presne toľko, aby bol rack plný (max 7) — nie len placed.length.
+                            // Tak sa nikdy nestane, že hráčovi zmiznú písmená kvôli bug-u.
+                            const numToDraw = Math.max(0, Math.min(7 - availableNow.length, prevState.letterBag.length));
+                            const { drawnLetters, remainingBag, bagEmpty } =
+                                drawLetters(prevState.letterBag, numToDraw);
+
+                            // --- DEBUG LOG ---
+                            console.log(`[updateGameState DEBUG] hra=${gameInstance.gameId} hráč=${prevPlayerIndex}`);
+                            console.log(`  placed (${placed.length}):`, placed.map(p => `${p.letter}(${p.id})`).join(', '));
+                            if (exchangeInFlight.length > 0) {
+                                console.log(`  exchangeInFlight (${exchangeInFlight.length}):`, exchangeInFlight.map(l => `${l.letter}(${l.id})`).join(', '));
+                            }
+                            console.log(`  remaining (${remaining.length}):`, remaining.map(l => `${l.letter}(${l.id})`).join(', '));
+                            console.log(`  numToDraw: ${numToDraw}, drawn:`, drawnLetters.map(l => `${l.letter}(${l.id})`).join(', '));
+                            // -----------------
+
+                            let rack = [...availableNow, ...drawnLetters];
                             while (rack.length < 7) rack.push(null);
                             rack = rack.slice(0, 7);
+
+                            console.log(`  finalRack:`, rack.map(l => l ? `${l.letter}(${l.id})` : 'null').join(', '));
 
                             gameInstance.gameState.playerRacks = prevState.playerRacks.map(
                                 (r, i) => i === prevPlayerIndex ? rack : r
                             );
                             gameInstance.gameState.letterBag = remainingBag;
                             gameInstance.gameState.isBagEmpty = bagEmpty;
+                            gameInstance.gameState.exchangeZoneLetters = [];
                             // Highlights zo serverového diffu (nie z klienta)
                             gameInstance.gameState.highlightedLetters = placed.map(p => ({ x: p.x, y: p.y }));
 
