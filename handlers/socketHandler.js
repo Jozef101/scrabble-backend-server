@@ -634,7 +634,18 @@ export default function initializeSocket(io, dbAdmin) {
                                     playerFromDb &&
                                     playerFromDb.playerIndex !== undefined
                                 ) {
-                                    // Uložíme základné info, socketId sa doplní, keď sa hráč pripojí
+                                    // Ak je tento hráč už v pamäti (rovnaké userId) a má živý
+                                    // socket, zachováme ho — inak by pripojenie/reconnect
+                                    // JEDNÉHO hráča vynulovalo socket toho druhého, už pripojeného.
+                                    const existing =
+                                        gameInstance.players[
+                                            playerFromDb.playerIndex
+                                        ];
+                                    const preservedSocketId =
+                                        existing &&
+                                        existing.userId === playerFromDb.id
+                                            ? existing.socketId
+                                            : null;
                                     gameInstance.players[
                                         playerFromDb.playerIndex
                                     ] = {
@@ -642,7 +653,7 @@ export default function initializeSocket(io, dbAdmin) {
                                         nickname: playerFromDb.nickname,
                                         playerIndex: playerFromDb.playerIndex,
                                         elo: playerFromDb.elo,
-                                        socketId: null, // Dôležité: socketId zatiaľ nie je známe
+                                        socketId: preservedSocketId,
                                     };
                                 }
                             });
@@ -846,8 +857,9 @@ export default function initializeSocket(io, dbAdmin) {
                     gameInstance.gameState.playerNicknames = playerNicknamesMap;
                     gameInstance.gameState.players = gameInstance.players;
 
-                    // emitGameStateToAll(io, gameInstance);
-                    socket.emit('gameStateUpdate', maskStateForPlayer(gameInstance.gameState, socket.playerIndex));
+                    // Pošleme čerstvý stav VŠETKÝM pripojeným (nielen práve pripojenému
+                    // klientovi), aby súper hneď videl, že sa hráč (znovu) pripojil.
+                    emitGameStateToAll(io, gameInstance);
 
                     // Načítanie a odoslanie chatovej histórie
                     try {
@@ -935,8 +947,9 @@ export default function initializeSocket(io, dbAdmin) {
                     gameInstance.gameState.gameMode = 'competitive';
                 }
 
-                // emitGameStateToAll(io, gameInstance);
-                socket.emit('gameStateUpdate', maskStateForPlayer(gameInstance.gameState, socket.playerIndex));
+                // Pošleme čerstvý stav VŠETKÝM pripojeným (nielen práve pripojenému
+                // klientovi), aby súper hneď videl, že sa hráč (znovu) pripojil.
+                emitGameStateToAll(io, gameInstance);
                 const connectedPlayersCount = gameInstance.players.filter(
                     (p) => p !== null && p.socketId !== null
                 ).length;
@@ -1552,7 +1565,10 @@ export default function initializeSocket(io, dbAdmin) {
                 }
                 case 'updateGameState':
                     if (gameInstance.gameState) {
-                        const { lastTurnInfo, ...restOfPayload } = action.payload;
+                        // players sa ignoruje — klient posiela vlastnú (zastaranú) kópiu,
+                        // ktorá by prepísala živý, serverom udržiavaný zoznam socketId
+                        // a navždy "odpojila" gameState.players od skutočných pripojení.
+                        const { lastTurnInfo, players, ...restOfPayload } = action.payload;
 
                         // Zachytíme stav PRED mergom — slúži na server-side výpočet racku a bagu
                         const prevState = gameInstance.gameState;
@@ -1562,6 +1578,7 @@ export default function initializeSocket(io, dbAdmin) {
                         gameInstance.gameState = {
                             ...prevState,
                             ...restOfPayload,
+                            players: gameInstance.players,
                         };
 
                         // --- SERVER-SIDE SPRÁVA RACKU A BAGU ---
@@ -2132,6 +2149,13 @@ export default function initializeSocket(io, dbAdmin) {
                 console.warn(
                     `Odpojený klient ${socket.id} (User: ${userId}) nebol nájdený v playerSlots pre hru ${gameId}.`
                 );
+            }
+
+            // Pošleme zostávajúcim pripojeným hráčom čerstvý stav, aby hneď videli,
+            // že súper odišiel od stola (namiesto toho, aby to zistili až pri ďalšom ťahu).
+            if (gameInstance.gameState) {
+                gameInstance.gameState.players = gameInstance.players;
+                emitGameStateToAll(io, gameInstance);
             }
 
             const connectedPlayersCount = gameInstance.players.filter(
