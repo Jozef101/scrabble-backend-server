@@ -965,12 +965,13 @@ export default function initializeSocket(io, dbAdmin) {
                             const gameDocRef = dbAdmin
                                 .collection('scrabbleGames')
                                 .doc(gameIdFromClient);
+                            // currentPlayerIndex sa NEZAPISUJE tu — jediný zdroj pravdy
+                            // pre toto pole je saveGameState(), inak hrozí race condition
+                            // pri súbežnom zápise (reconnect vs. spracovanie ťahu), kedy
+                            // Firestore môže aplikovať tento starší zápis až po tom novšom.
                             await gameDocRef.set(
                                 {
                                     status: 'in-progress',
-                                    currentPlayerIndex:
-                                        gameInstance.gameState
-                                            ?.currentPlayerIndex ?? 0,
                                     players: playersWithElo, // Uložíme hráčov aj s ich "zmrazeným" ELO
                                 },
                                 { merge: true }
