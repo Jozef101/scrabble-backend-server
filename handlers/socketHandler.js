@@ -122,6 +122,14 @@ async function saveGameState(gameInstance, db, extraFields = {}) {
     if (!db || !gameInstance.gameState) return;
     const { gameState } = gameInstance;
 
+    // Zaznamenáme, kedy sa ťah naposledy prepol na iného hráča — bez ohľadu na to,
+    // ktorá akcia to spôsobila (schválenie, zamietnutie, bežný ťah, losovanie...).
+    // Slúži na zoradenie "mojich rozohraných hier" v Lobby podľa toho, ako dlho už čakajú na môj ťah.
+    if (gameInstance._lastKnownCurrentPlayerIndex !== gameState.currentPlayerIndex) {
+        gameState.turnStartedAt = Date.now();
+        gameInstance._lastKnownCurrentPlayerIndex = gameState.currentPlayerIndex;
+    }
+
     const playersData = gameInstance.players
         .filter((p) => p !== null)
         .map((p) => ({
@@ -169,6 +177,7 @@ async function saveGameState(gameInstance, db, extraFields = {}) {
             progress: countTilesOnBoard(gameState.board),
             status: firestoreStatus,
             players: playersData,
+            turnStartedAt: gameState.turnStartedAt ?? null,
             ...extraFields,
         }, { merge: true });
     } catch (e) {
@@ -220,6 +229,7 @@ async function loadGameState(gameId, db) {
                 turnNumber: data.turnNumber ?? 0,
                 winnerIndex: data.winnerIndex ?? null,
                 pendingTurn: data.pendingTurn ?? null,
+                turnStartedAt: data.turnStartedAt ?? null,
                 gameMode: data.gameMode,
                 hasInitialGameStateReceived: true,
                 playerNicknames: {},
@@ -444,10 +454,10 @@ function applyMoveLetter(gameState, payload, playerIndex) {
             }
         }
     } else if (target.type === 'board') {
-        newBoard[target.x][target.y] = {
-            ...letterToMove,
-            originalRackIndex: letterData.originalRackIndex,
-        };
+        const { originalRackIndex, ...letterWithoutOriginalIndex } = letterToMove;
+        newBoard[target.x][target.y] = letterData.originalRackIndex !== undefined
+            ? { ...letterWithoutOriginalIndex, originalRackIndex: letterData.originalRackIndex }
+            : letterWithoutOriginalIndex;
     } else if (target.type === 'exchangeZone') {
         newExchangeZoneLetters.push(letterToMove);
     }
@@ -831,6 +841,7 @@ export default function initializeSocket(io, dbAdmin) {
                         if (loadedState) {
                             gameInstance.gameState = loadedState;
                             gameInstance.isGameStarted = true;
+                            gameInstance._lastKnownCurrentPlayerIndex = loadedState.currentPlayerIndex;
                             console.log(`Stav hry ${gameIdFromClient} úspešne načítaný z DB.`);
                         } else {
                             gameInstance.gameState = generateInitialGameState();
@@ -2021,6 +2032,10 @@ export default function initializeSocket(io, dbAdmin) {
                     emitGameStateToAll(io, gameInstance);
                     break;
                 }
+                case 'playerLeftGame':
+                    // Skutočné upratanie (odstránenie zo slotu, notifikácia súpera)
+                    // vykoná handler 'disconnect', ktorý klient vyvolá hneď po tejto akcii.
+                    break;
                 default:
                     console.warn(`Neznámy typ akcie: ${action.type}`);
                     break;

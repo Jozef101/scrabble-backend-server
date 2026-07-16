@@ -20,6 +20,7 @@ if (serviceAccount) {
         credential: admin.credential.cert(serviceAccount)
     });
     dbAdmin = getFirestore();
+    dbAdmin.settings({ ignoreUndefinedProperties: true });
     console.log("Firebase Admin SDK inicializované.");
 } else {
     console.error("Firebase Admin SDK nebolo inicializované.");
