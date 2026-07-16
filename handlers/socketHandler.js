@@ -1238,6 +1238,9 @@ export default function initializeSocket(io, dbAdmin) {
                 case 'returnAllToRack': {
                     const { gameState } = gameInstance;
                     if (!gameState) break;
+                    // Ťah, ktorý čaká na schválenie súperom, sa nesmie dať vziať späť —
+                    // currentPlayerIndex je vtedy už prepnutý na súpera (schvaľovateľa).
+                    if (gameState.currentPlayerIndex !== socket.playerIndex) break;
 
                     const newBoard = gameState.board.map(row => [...row]);
                     const newRack = [...(gameState.playerRacks[socket.playerIndex] || [])];
