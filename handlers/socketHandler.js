@@ -413,8 +413,15 @@ function applyMoveLetter(gameState, payload, playerIndex) {
         newBoard[source.x][source.y] = null;
         if (letterToMove.letter === '') letterToMove.assignedLetter = null;
     } else if (source.type === 'rack') {
-        letterToMove = { ...letterData };
-        newPlayerRacks[playerIndex][source.index] = null;
+        // Nedôverujeme klientovmu letterData ako takému — použijeme skutočný
+        // obsah racku na danom indexe. Ak sa nezhoduje s ID, ktoré klient tvrdí,
+        // že tam presúva (napr. kvôli stale closure na klientovi), ťah zahodíme
+        // namiesto toho, aby sme na cieľ skopírovali cudzie/duplicitné písmeno.
+        const rackLetter = newPlayerRacks[playerIndex]?.[source.index];
+        if (rackLetter && rackLetter.id === letterData?.id) {
+            letterToMove = { ...rackLetter };
+            newPlayerRacks[playerIndex][source.index] = null;
+        }
     } else if (source.type === 'exchangeZone') {
         const index = newExchangeZoneLetters.findIndex(
             (l) => l.id === letterData.id
