@@ -1670,12 +1670,23 @@ export default function initializeSocket(io, dbAdmin) {
                             );
                             gameInstance.gameState.letterBag = bag;
                             gameInstance.gameState.isBagEmpty = bag.length === 0;
+                            // Výmena sa dosky netýka — nedôverujeme klientovej kópii, mohla by
+                            // niesť nepotvrdené písmená z nedokončeného ťahu (pozri nižšie).
+                            gameInstance.gameState.board = prevState.boardAtStartOfTurn;
+                            gameInstance.gameState.boardAtStartOfTurn = prevState.boardAtStartOfTurn;
 
                         } else {
                             // Pasovanie: rack ani bag sa nemenia — server zachová svoje hodnoty
                             gameInstance.gameState.playerRacks = prevState.playerRacks;
                             gameInstance.gameState.letterBag = prevState.letterBag;
                             gameInstance.gameState.isBagEmpty = prevState.isBagEmpty;
+                            // Ochrana pred nepotvrdenými písmenami na doske: ak hráč pasuje,
+                            // doska sa vôbec nesmie zmeniť. Klient by ju mala poslať nezmenenú,
+                            // ale kvôli prípadnému rozjazdu hasPlacedOnBoardThisTurn na klientovi
+                            // (napr. race condition s prichádzajúcim broadcastom) radšej doske
+                            // nedôverujeme a natvrdo ju vrátime na stav pred ťahom.
+                            gameInstance.gameState.board = prevState.boardAtStartOfTurn;
+                            gameInstance.gameState.boardAtStartOfTurn = prevState.boardAtStartOfTurn;
                         }
 
                         // Skontrolujeme, či hra práve skončila (záchranná sieť pre staré cesty)
