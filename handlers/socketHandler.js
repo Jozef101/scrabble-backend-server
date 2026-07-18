@@ -14,6 +14,18 @@ import { dbAdmin } from '../config/firebase.js';
 const BOARD_COLS = 'ABCDEFGHIJKLMNO';
 
 /**
+ * Zapíše jeden riadok do konzoly s čitateľným ISO časom na začiatku — bez
+ * ohľadu na to, či beží server lokálne (node bez hostingového wrapperu, ktorý
+ * by čas pridal sám) alebo nasadený, log je vždy sám o sebe čitateľný a
+ * chronologicky zoraditeľný.
+ */
+function logAction(type, gameId, playerIndex, payload) {
+    console.log(
+        `[${new Date().toISOString()}] [PLAYER_ACTION] game=${gameId} player=${playerIndex} type=${type} payload=${JSON.stringify(payload)}`
+    );
+}
+
+/**
  * Konvertuje internú 2D dosku (board[x][y]) na Firestore objekt s chess kľúčmi (A1–O15).
  * Ukladajú sa len obsadené políčka.
  */
@@ -601,6 +613,7 @@ export default function initializeSocket(io, dbAdmin) {
         console.log(`Nový klient pripojený: ${socket.id}`);
 
         socket.on('joinGame', async ({ gameId: gameIdFromClient, userId }) => {
+            logAction('joinGame', gameIdFromClient, '?', { socketId: socket.id, userId });
             if (!gameIdFromClient) {
                 gameIdFromClient = 'default-scrabble-game';
                 console.log(
@@ -1060,11 +1073,12 @@ export default function initializeSocket(io, dbAdmin) {
                 delete gameInstance.gameState.lastTurnInfo;
             }
 
-            console.log(
-                `Akcia od Hráča ${socket.playerIndex + 1} v hre ${
-                    gameInstance.gameId
-                }: ${action.type}`
-            );
+            // Kompletný log KAŽDEJ akcie hráča na jednom mieste (nie roztrúsene
+            // po jednotlivých case vetvách) — nech sa dá spätne rekonštruovať,
+            // čo presne kto poslal a kedy, keď treba dohľadať čo sa pokazilo.
+            // Zámerne len console.log (zachytáva hosting v svojich logoch) —
+            // nezaťažuje to Firestore zápismi pri každom potiahnutí písmena.
+            logAction(action.type, gameInstance.gameId, socket.playerIndex, action.payload);
 
             switch (action.type) {
                 case 'drawForTurn': {
@@ -1412,33 +1426,11 @@ export default function initializeSocket(io, dbAdmin) {
                         gameState.playerScores[playerIndex] += turnScore;
                         gameState.isFirstTurn = false;
 
-                        const turnDetails = {
-                            actionType: 'placeLetters',
-                            playerIndex: playerIndex,
-                            placedLetters: placedLetters,
-                            newWords: allFormedWords,
-                            score: turnScore,
-                            timestamp: Date.now(),
-                        };
-                        try {
-                            const approvalLogEntry = {
-                                actionType: 'turn_approved',
-                                playerIndex: socket.playerIndex,
-                                originalPlayerIndex: pendingTurn.playerIndex,
-                                timestamp: Date.now() - 1,
-                            };
-                            const turnLogCollectionRef = dbAdmin
-                                .collection('scrabbleGames')
-                                .doc(gameInstance.gameId)
-                                .collection('turnLogs');
-                            await turnLogCollectionRef.add(approvalLogEntry);
-                            await turnLogCollectionRef.add(turnDetails);
-                        } catch (e) {
-                            console.error(
-                                `Chyba pri ukladaní schváleného ťahu do logu:`,
-                                e
-                            );
-                        }
+                        // Rack pred ťahom — zachytíme HO PRED prepočtom nižšie,
+                        // nech ho vieme zapísať do logu v tej istej jednotnej
+                        // schéme ako priame potvrdenie ťahu (confirmTurn na klientovi).
+                        const rackBeforeTurnValidation = gameState.playerRacks[playerIndex];
+                        gameState.turnNumber = (gameState.turnNumber || 0) + 1;
 
                         // Počet položených písmen zo servera (nie z klienta)
                         const serverPlaced = getPlacedLettersFromBoardDiff(
@@ -1464,6 +1456,43 @@ export default function initializeSocket(io, dbAdmin) {
                         const { drawnLetters, remainingBag, bagEmpty } =
                             drawLetters(gameState.letterBag, numToDrawValidation);
                         let newRack = [...availableValidation, ...drawnLetters];
+
+                        // Jednotná schéma pre turnLogs — rovnaká ako pri priamom
+                        // potvrdení ťahu (confirmTurn na klientovi), aby sa dal
+                        // log naprieč oboma tokmi spracovávať rovnako (napr. pri
+                        // spätnej rekonštrukcii/replay-i). Žiadne board/bag
+                        // snapshoty — sú redundantné voči placedLetters.
+                        const turnDetails = {
+                            actionType: 'placeLetters',
+                            playerIndex: playerIndex,
+                            placedLetters: placedLetters,
+                            newWords: allFormedWords,
+                            score: turnScore,
+                            turnNumber: gameState.turnNumber,
+                            timestamp: Date.now(),
+                            exchangedLetters: null,
+                            rackBeforeTurn: rackBeforeTurnValidation,
+                            lettersDrawn: drawnLetters,
+                        };
+                        try {
+                            const approvalLogEntry = {
+                                actionType: 'turn_approved',
+                                playerIndex: socket.playerIndex,
+                                originalPlayerIndex: pendingTurn.playerIndex,
+                                timestamp: Date.now() - 1,
+                            };
+                            const turnLogCollectionRef = dbAdmin
+                                .collection('scrabbleGames')
+                                .doc(gameInstance.gameId)
+                                .collection('turnLogs');
+                            await turnLogCollectionRef.add(approvalLogEntry);
+                            await turnLogCollectionRef.add(turnDetails);
+                        } catch (e) {
+                            console.error(
+                                `Chyba pri ukladaní schváleného ťahu do logu:`,
+                                e
+                            );
+                        }
 
                         // --- NOVÁ KONTROLA KONCA HRY ---
                         if (bagEmpty && newRack.length === 0) {
@@ -1884,11 +1913,38 @@ export default function initializeSocket(io, dbAdmin) {
                     }
 
                     try {
+                        // Jednotná schéma turnLogs — zapisujeme len tieto polia,
+                        // nič iné (napr. staré klienty by ešte mohli posielať
+                        // boardBeforeTurn/boardAfterTurn/letterBag*, tie zahodíme).
+                        const {
+                            actionType,
+                            placedLetters = null,
+                            newWords = null,
+                            score = null,
+                            turnNumber = null,
+                            playerIndex = null,
+                            timestamp = Date.now(),
+                            exchangedLetters = null,
+                            rackBeforeTurn = null,
+                            lettersDrawn = null,
+                        } = action.payload;
+
                         const turnLogCollectionRef = dbAdmin
                             .collection('scrabbleGames')
                             .doc(gameInstance.gameId)
                             .collection('turnLogs');
-                        await turnLogCollectionRef.add(action.payload);
+                        await turnLogCollectionRef.add({
+                            actionType,
+                            placedLetters,
+                            newWords,
+                            score,
+                            turnNumber,
+                            playerIndex,
+                            timestamp,
+                            exchangedLetters,
+                            rackBeforeTurn,
+                            lettersDrawn,
+                        });
                     } catch (error) {
                         console.error(
                             `CHYBA PRI UKLADANÍ LOGU ŤAHU PRE HRU ${gameInstance.gameId}:`,
@@ -1901,8 +1957,10 @@ export default function initializeSocket(io, dbAdmin) {
                         gameInstance.gameState &&
                         !gameInstance.gameState.isGameOver
                     ) {
-                        const { surrenderingPlayerIndex } = action.payload;
-                        const loserIndex = surrenderingPlayerIndex;
+                        // Nedôverujeme surrenderingPlayerIndex z payloadu — inak by
+                        // hráč mohol poslať index súpera a prinútiť ho prehrať.
+                        // Vzdať sa môže len ten, kto akciu skutočne odoslal.
+                        const loserIndex = socket.playerIndex;
                         const winnerIndex = loserIndex === 0 ? 1 : 0;
 
                         const loser = gameInstance.players.find(
@@ -1974,47 +2032,53 @@ export default function initializeSocket(io, dbAdmin) {
                     }
                     break;
                 case 'gameOver': {
-                    // Použijeme { } pre lepší scope
-                    // Deštrukturujeme si všetky dáta, ktoré nám poslal klient
-                    const {
-                        winnerId,
-                        loserId,
-                        initialScores,
-                        finalScores,
-                        deductions,
-                        bonus,
-                        finishingPlayerIndex,
-                        reason,
-                        winnerIndex,
-                    } = action.payload;
-
-                    // 1. Vytvoríme finálny záznam do denníka
-                    const logEntry = {
-                        actionType: 'game_over',
-                        reason: reason,
-                        initialScores: initialScores,
-                        finalScores: finalScores,
-                        deductions: deductions,
-                        bonus: bonus,
-                        winnerIndex: winnerIndex,
-                        finishingPlayerIndex: finishingPlayerIndex,
-                        timestamp: Date.now(),
-                    };
-                    try {
-                        const turnLogCollectionRef = dbAdmin
-                            .collection('scrabbleGames')
-                            .doc(gameInstance.gameId)
-                            .collection('turnLogs');
-                        await turnLogCollectionRef.add(logEntry);
-                    } catch (e) {
-                        console.error(
-                            "Chyba pri ukladaní záznamu 'game_over':",
-                            e
-                        );
+                    // Klient tu predtým posielal hotové finalScores/winnerId/winnerIndex
+                    // a server im slepo veril — škodlivý klient si mohol vymyslieť
+                    // ľubovoľný výsledok a nechať si podľa neho upraviť ELO.
+                    // Namiesto toho si dôvod aj skóre určí a prepočíta server sám
+                    // z vlastného autoritatívneho stavu (rovnaká logika ako pri
+                    // surrender/resolveTurnValidation), klientovým dátam nedôverujeme.
+                    if (!gameInstance.gameState || gameInstance.gameState.isGameOver) {
+                        break;
                     }
 
-                    // 2. Aktualizujeme ELO (logika, ktorú už máte, len je teraz bezpečnejšia)
-                    if (winnerId && loserId) {
+                    const gs = gameInstance.gameState;
+                    let reason = null;
+                    let finishingPlayerIndex = null;
+
+                    if (gs.consecutivePasses >= 6) {
+                        reason = 'pass_end';
+                    } else {
+                        const emptyRackIndex = gs.playerRacks.findIndex(
+                            (rack) => rack && rack.every((l) => l === null)
+                        );
+                        if (gs.isBagEmpty && emptyRackIndex !== -1) {
+                            reason = 'standard_end';
+                            finishingPlayerIndex = emptyRackIndex;
+                        }
+                    }
+
+                    if (!reason) {
+                        console.warn(
+                            `Hra ${gameInstance.gameId}: klient poslal 'gameOver', ale serverový stav to nepotvrdzuje (consecutivePasses=${gs.consecutivePasses}, isBagEmpty=${gs.isBagEmpty}). Akcia ignorovaná.`
+                        );
+                        break;
+                    }
+
+                    await calculateAndLogFinalScores(gameInstance, dbAdmin, {
+                        reason,
+                        finishingPlayerIndex,
+                    });
+
+                    const finalWinnerIndex = gameInstance.gameState.winnerIndex;
+                    const winner = finalWinnerIndex !== null
+                        ? gameInstance.players.find((p) => p && p.playerIndex === finalWinnerIndex)
+                        : null;
+                    const loser = finalWinnerIndex !== null
+                        ? gameInstance.players.find((p) => p && p.playerIndex === 1 - finalWinnerIndex)
+                        : null;
+
+                    if (winner && loser) {
                         try {
                             const gameDocRef = dbAdmin
                                 .collection('scrabbleGames')
@@ -2024,7 +2088,7 @@ export default function initializeSocket(io, dbAdmin) {
                                 gameDoc.exists &&
                                 gameDoc.data().gameMode === 'competitive'
                             ) {
-                                await updateEloRatings(winnerId, loserId);
+                                await updateEloRatings(winner.userId, loser.userId);
                             }
                         } catch (e) {
                             console.error(
@@ -2034,19 +2098,15 @@ export default function initializeSocket(io, dbAdmin) {
                         }
                     }
 
-                    // 3. Aktualizujeme finálny stav hry v pamäti a v databáze
                     gameInstance.gameState.isGameOver = true;
-                    gameInstance.gameState.playerScores = finalScores;
-                    gameInstance.gameState.winnerIndex = winnerIndex;
 
                     await saveGameState(gameInstance, dbAdmin, {
                         endedAt: new Date(),
-                        winnerId: winnerId || null,
-                        loserId: loserId || null,
+                        winnerId: winner?.userId || null,
+                        loserId: loser?.userId || null,
                         gameOverReason: reason,
                     });
 
-                    // 4. Pošleme finálny stav všetkým klientom
                     emitGameStateToAll(io, gameInstance);
                     break;
                 }
@@ -2136,7 +2196,7 @@ export default function initializeSocket(io, dbAdmin) {
         });
 
         socket.on('disconnect', async () => {
-            console.log(`Klient odpojený: ${socket.id}`);
+            logAction('disconnect', socket.gameId, socket.playerIndex, { socketId: socket.id, userId: socket.userId });
             const gameInstance = socket.gameInstance;
             const gameId = socket.gameId;
             const userId = socket.userId;
