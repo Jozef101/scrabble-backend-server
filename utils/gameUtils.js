@@ -30,16 +30,18 @@ export function createLetterBag() {
 export function drawLetters(currentBag, numToDraw) {
     const drawn = [];
     const tempBag = [...currentBag]; // Pracujeme s kópiou vrecúška
-    let bagEmpty = false;
 
     for (let i = 0; i < numToDraw; i++) {
         if (tempBag.length > 0) {
             drawn.push(tempBag.pop()); // Odoberieme písmeno z konca (ako z vrchu kopy)
         } else {
             console.warn("Vrecúško je prázdne, nedá sa ťahať viac písmen.");
-            bagEmpty = true;
             break;
         }
     }
-    return { drawnLetters: drawn, remainingBag: tempBag, bagEmpty: bagEmpty };
+    // Vrecko je "prázdne" podľa skutočného stavu po ťahaní, nie podľa toho,
+    // či cyklus narazil na nedostatok písmen — inak by sa flag nenastavil
+    // pri numToDraw=0 (vrecko už prázdne pred týmto ťahom) a neskôr by sa
+    // dokonca prepísal naspäť na false a hra by nikdy neskončila.
+    return { drawnLetters: drawn, remainingBag: tempBag, bagEmpty: tempBag.length === 0 };
 }

@@ -1056,6 +1056,7 @@ export default function initializeSocket(io, dbAdmin) {
                 action.type !== 'drawForTurn' &&
                 action.type !== 'playerLeftGame' &&
                 action.type !== 'resolveTurnValidation' &&
+                action.type !== 'gameOver' &&
                 gameInstance.gameState.currentPlayerIndex !== socket.playerIndex
             ) {
                 socket.emit('gameError', 'Nie je váš ťah!');
