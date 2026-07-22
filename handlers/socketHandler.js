@@ -366,6 +366,28 @@ function getPlacedLettersFromBoardDiff(board, boardAtStartOfTurn) {
     return placed;
 }
 
+/**
+ * Nájde ID dlaždíc, ktoré sa na doske vyskytujú viac než raz naraz —
+ * nemalo by sa stať nikdy (každá fyzická dlaždica existuje len jedna),
+ * ale klient posiela pri 'updateGameState' celú dosku bez toho, aby ju
+ * server overoval. Ak by mu poslal (napr. kvôli zastaranému lokálnemu
+ * stavu) dosku so zdvojenou dlaždicou, zapísalo by sa to natrvalo.
+ */
+function findDuplicateBoardTileIds(board) {
+    const seen = new Set();
+    const duplicates = new Set();
+    for (let x = 0; x < board.length; x++) {
+        for (let y = 0; y < board[x].length; y++) {
+            const tile = board[x][y];
+            if (tile && tile.id) {
+                if (seen.has(tile.id)) duplicates.add(tile.id);
+                seen.add(tile.id);
+            }
+        }
+    }
+    return [...duplicates];
+}
+
 // NOVÁ FUNKCIA: Počíta, koľko políčok na doske obsahuje písmeno
 const countTilesOnBoard = (board) => {
     let count = 0;
@@ -1628,6 +1650,22 @@ export default function initializeSocket(io, dbAdmin) {
                             ...restOfPayload,
                             players: gameInstance.players,
                         };
+
+                        // Klient posiela celú dosku, nie len diff — ak by v nej (napr. kvôli
+                        // zastaranému lokálnemu stavu po prepnutí hry) bola tá istá dlaždica
+                        // na dvoch miestach naraz, odmietneme len samotnú dosku a ponecháme
+                        // poslednú známu dobrú (server má vlastnú kópiu z predošlých ťahov),
+                        // nech sa duplicita nezapíše natrvalo do Firestore.
+                        if (restOfPayload.board) {
+                            const duplicateIds = findDuplicateBoardTileIds(restOfPayload.board);
+                            if (duplicateIds.length > 0) {
+                                console.error(
+                                    `Hra ${gameInstance.gameId}: klient poslal dosku so zdvojenými dlaždicami (${duplicateIds.join(', ')}). Doska odmietnutá, ponechávam predošlý stav.`
+                                );
+                                gameInstance.gameState.board = prevState.board;
+                                socket.emit('gameError', 'Neplatný stav dosky, skús ťah znova.');
+                            }
+                        }
 
                         // --- SERVER-SIDE SPRÁVA RACKU A BAGU ---
                         // Server sám vypočíta nový rack a bag, bez ohľadu na to, čo poslal klient.
